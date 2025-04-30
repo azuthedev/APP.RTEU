@@ -1,0 +1,23 @@
+{
+  "name": "Royal Transfer EU Portal",
+  "short_name": "RT Portal",
+  "description": "Portal for Royal Transfer EU staff, administrators and partners",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2563eb",
+  "icons": [
+    {
+      "src": "icons/admin/192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/admin/512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
