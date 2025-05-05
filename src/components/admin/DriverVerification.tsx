@@ -97,9 +97,24 @@ const DriverVerification: React.FC = () => {
       // Call the edge function to fetch drivers with admin privileges
       const driversData = await adminApi.fetchDrivers();
       
-      setDrivers(driversData || []);
+      // Ensure driversData is an array before setting state
+      if (Array.isArray(driversData)) {
+        setDrivers(driversData);
+      } else if (driversData && typeof driversData === 'object' && Array.isArray(driversData.data)) {
+        // Handle if API returns an object with a data property
+        setDrivers(driversData.data);
+      } else {
+        console.error('Unexpected response format from fetchDrivers API:', driversData);
+        setDrivers([]); // Ensure drivers is set to an empty array
+        toast({
+          variant: "destructive",
+          title: "Error",
+          description: "Received invalid data format from the server. Please try again."
+        });
+      }
     } catch (error: any) {
       console.error('Error fetching drivers:', error);
+      setDrivers([]); // Ensure drivers is set to an empty array on error
       toast({
         variant: "destructive",
         title: "Error",
@@ -129,9 +144,11 @@ const DriverVerification: React.FC = () => {
       // Use the admin API to fetch documents
       const documentsData = await adminApi.fetchDriverDocuments(driverId);
       
-      setDocuments(documentsData || []);
+      // Ensure documentsData is an array
+      setDocuments(Array.isArray(documentsData) ? documentsData : []);
     } catch (error: any) {
       console.error('Error fetching driver documents:', error);
+      setDocuments([]);
       toast({
         variant: "destructive",
         title: "Error",
@@ -149,9 +166,11 @@ const DriverVerification: React.FC = () => {
       // Use the admin API to fetch activity logs
       const logsData = await adminApi.fetchDriverLogs(driverId);
       
-      setActivityLogs(logsData || []);
+      // Ensure logsData is an array
+      setActivityLogs(Array.isArray(logsData) ? logsData : []);
     } catch (error: any) {
       console.error('Error fetching driver logs:', error);
+      setActivityLogs([]);
       toast({
         variant: "destructive",
         title: "Error",
