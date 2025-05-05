@@ -15,7 +15,10 @@ import {
   RefreshCw,
   Eye,
   Download,
-  Filter
+  Filter,
+  UserPlus,
+  CheckSquare,
+  X
 } from 'lucide-react';
 import { format, parseISO, isAfter } from 'date-fns';
 import { adminApi } from '../../lib/adminApi';
@@ -45,8 +48,8 @@ interface Document {
   file_url: string;
   uploaded_at: string;
   verified: boolean;
-  name: string;
   expiry_date: string | null;
+  name: string;
 }
 
 interface ActivityLog {
@@ -82,6 +85,7 @@ const DriverVerification: React.FC = () => {
   const [showDeclineConfirm, setShowDeclineConfirm] = useState(false);
   const [declineReason, setDeclineReason] = useState('');
   const [processingAction, setProcessingAction] = useState(false);
+  const [creatingProfile, setCreatingProfile] = useState(false);
   
   const { toast } = useToast();
   const { userData } = useAuth();
@@ -160,24 +164,135 @@ const DriverVerification: React.FC = () => {
   };
 
   const fetchDriverLogs = async (driverId: string) => {
+    if (!driverId) {
+      console.error('Invalid driver ID');
+      return;
+    }
+    
     try {
       setLoadingLogs(true);
       
       // Use the admin API to fetch activity logs
-      const logsData = await adminApi.fetchDriverLogs(driverId);
+      const response = await adminApi.fetchDriverLogs(driverId);
       
-      // Ensure logsData is an array
-      setActivityLogs(Array.isArray(logsData) ? logsData : []);
+      // Check if response is valid
+      if (!response) {
+        throw new Error('No response received from server');
+      }
+      
+      // Check if response contains an error property
+      if (response.error) {
+        throw new Error(response.error);
+      }
+      
+      // Ensure response data is an array
+      if (Array.isArray(response)) {
+        setActivityLogs(response);
+      } else if (response && typeof response === 'object' && Array.isArray(response.data)) {
+        // Handle if API returns an object with a data property
+        setActivityLogs(response.data);
+      } else {
+        console.error('Unexpected response format from fetchDriverLogs API:', response);
+        setActivityLogs([]);
+        toast({
+          variant: "destructive",
+          title: "Error",
+          description: "Received invalid data format when fetching activity logs",
+        });
+      }
     } catch (error: any) {
       console.error('Error fetching driver logs:', error);
       setActivityLogs([]);
+      
+      // Extract error message from various possible error formats
+      let errorMessage = "Failed to fetch activity logs";
+      
+      if (error) {
+        if (typeof error === 'string') {
+          errorMessage = error;
+        } else if (error.message) {
+          errorMessage = error.message;
+        } else if (error.error) {
+          errorMessage = error.error;
+        } else if (error.statusText) {
+          errorMessage = error.statusText;
+        }
+      }
+      
       toast({
         variant: "destructive",
         title: "Error",
-        description: error.message || "Failed to fetch driver activity logs.",
+        description: errorMessage,
       });
     } finally {
       setLoadingLogs(false);
+    }
+  };
+
+  const createDriverProfile = async (userId: string) => {
+    try {
+      setCreatingProfile(true);
+      
+      // Get the current session for the JWT token
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        throw new Error('Authentication required');
+      }
+      
+      // Call the edge function for creating a driver profile
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const response = await fetch(`${supabaseUrl}/functions/v1/driver-permissions-fix`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ userId })
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `HTTP error ${response.status}`);
+      }
+      
+      const result = await response.json();
+      
+      if (result.success && result.driverId) {
+        toast({
+          title: "Profile Created",
+          description: "Driver profile has been created successfully.",
+          variant: "success"
+        });
+        
+        // Refresh the drivers list
+        await fetchDrivers();
+        
+        // If the selected driver is the one we just created a profile for, update it
+        if (selectedDriver && selectedDriver.user_id === userId) {
+          // Get the newly created driver
+          const updatedDriver = drivers.find(d => d.user_id === userId && !d._isPartnerWithoutProfile);
+          
+          if (updatedDriver) {
+            setSelectedDriver(updatedDriver);
+            fetchDriverDocuments(updatedDriver.id);
+            fetchDriverLogs(updatedDriver.id);
+          }
+        }
+        
+        return result.driverId;
+      }
+      
+      throw new Error('Failed to create driver profile');
+    } catch (error: any) {
+      console.error('Error creating driver profile:', error);
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: error.message || "Failed to create driver profile. Please try again.",
+      });
+      return null;
+    } finally {
+      setCreatingProfile(false);
     }
   };
 
@@ -216,7 +331,9 @@ const DriverVerification: React.FC = () => {
       });
       
       // Fetch updated logs
-      fetchDriverLogs(selectedDriver.id);
+      if (selectedDriver.id) {
+        fetchDriverLogs(selectedDriver.id);
+      }
     } catch (error: any) {
       console.error('Error approving driver:', error);
       toast({
@@ -259,7 +376,9 @@ const DriverVerification: React.FC = () => {
       });
       
       // Fetch updated logs
-      fetchDriverLogs(selectedDriver.id);
+      if (selectedDriver.id) {
+        fetchDriverLogs(selectedDriver.id);
+      }
       
       // Reset
       setDeclineReason('');
@@ -273,6 +392,37 @@ const DriverVerification: React.FC = () => {
     } finally {
       setProcessingAction(false);
       setShowDeclineConfirm(false);
+    }
+  };
+  
+  const toggleVerificationStatus = async () => {
+    if (!selectedDriver) return;
+    
+    try {
+      setProcessingAction(true);
+      
+      // Determine the new status (toggle current status)
+      const newStatus = selectedDriver.verification_status === 'verified' ? 'pending' : 'verified';
+      const action = newStatus === 'verified' ? approveDriver : declineDriver;
+      
+      if (newStatus === 'verified') {
+        // Call approveDriver function
+        await approveDriver();
+      } else {
+        // For reverting to pending, we need to set a reason
+        setDeclineReason('Admin manually changed status to pending');
+        await declineDriver();
+      }
+      
+    } catch (error: any) {
+      console.error('Error toggling verification status:', error);
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: error.message || "Failed to change verification status. Please try again.",
+      });
+    } finally {
+      setProcessingAction(false);
     }
   };
 
@@ -311,7 +461,7 @@ const DriverVerification: React.FC = () => {
   };
 
   // Filter drivers based on search and status filter
-  const filteredDrivers = drivers.filter(driver => {
+  const filteredDrivers = Array.isArray(drivers) ? drivers.filter(driver => {
     const matchesSearch = 
       driver.user.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       driver.user.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -324,7 +474,7 @@ const DriverVerification: React.FC = () => {
       (statusFilter === 'unverified' && driver._isPartnerWithoutProfile);
     
     return matchesSearch && matchesStatus;
-  });
+  }) : [];
 
   // Format document name for display
   const formatDocumentType = (docType: string) => {
@@ -345,6 +495,13 @@ const DriverVerification: React.FC = () => {
     const today = new Date();
     
     return isAfter(today, expiryDate);
+  };
+
+  const closeDetails = () => {
+    setShowDetails(false);
+    setSelectedDriver(null);
+    setDocuments([]);
+    setActivityLogs([]);
   };
 
   if (loading && !drivers.length) {
@@ -430,7 +587,7 @@ const DriverVerification: React.FC = () => {
                   </div>
                   
                   <div className={`px-2 py-1 text-xs rounded-full ${
-                    driver._isPartnerWithoutProfile ? 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300' :
+                    driver._isPartnerWithoutProfile ? 'bg-gray-100 dark:bg-gray-700/50 border-gray-200 dark:border-gray-700' : 
                     driver.verification_status === 'verified' ? 'bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300' :
                     driver.verification_status === 'pending' ? 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-300' :
                     driver.verification_status === 'declined' ? 'bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-300' :
@@ -481,16 +638,20 @@ const DriverVerification: React.FC = () => {
 
       {/* Driver Details Modal */}
       {showDetails && selectedDriver && (
-        <div className="fixed inset-0 bg-black/50 dark:bg-black/70 z-50 overflow-y-auto flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-4xl w-full">
+        <div className="fixed inset-0 bg-black/50 dark:bg-black/70 z-50 overflow-y-auto flex items-center justify-center" onClick={closeDetails}>
+          <div 
+            className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-4xl w-full m-4 max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
             {/* Header */}
-            <div className="px-6 py-4 border-b dark:border-gray-700 flex justify-between items-center">
+            <div className="sticky top-0 z-10 px-6 py-4 border-b dark:border-gray-700 flex justify-between items-center bg-white dark:bg-gray-800">
               <h3 className="text-lg font-medium text-gray-900 dark:text-white">Driver Details</h3>
               <button
-                onClick={() => setShowDetails(false)}
-                className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                onClick={closeDetails}
+                className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 rounded"
+                aria-label="Close"
               >
-                &times;
+                <X className="h-6 w-6" />
               </button>
             </div>
             
@@ -523,21 +684,24 @@ const DriverVerification: React.FC = () => {
                     
                     <div className="flex justify-center mb-4">
                       <span className={`px-2 py-1 text-xs rounded-full ${
+                        selectedDriver._isPartnerWithoutProfile ? 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300' :
                         selectedDriver.verification_status === 'verified' 
                           ? 'bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300' 
-                          : selectedDriver.verification_status === 'pending' 
-                            ? 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-300' 
+                          : selectedDriver.verification_status === 'pending'
+                            ? 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-300'
                             : selectedDriver.verification_status === 'declined' 
-                              ? 'bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-300' 
+                              ? 'bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-300'
                               : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300'
                       }`}>
-                        {selectedDriver.verification_status.charAt(0).toUpperCase() + selectedDriver.verification_status.slice(1)}
+                        {selectedDriver._isPartnerWithoutProfile 
+                          ? 'No Profile' 
+                          : selectedDriver.verification_status.charAt(0).toUpperCase() + selectedDriver.verification_status.slice(1)}
                       </span>
                     </div>
                     
                     {selectedDriver.verification_status === 'verified' && (
                       <div className="text-center mb-4">
-                        <span className={`px-3 py-1 text-sm font-medium rounded-full ${
+                        <span className={`px-3 py-1 text-xs rounded-full ${
                           selectedDriver.is_available 
                             ? 'bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300' 
                             : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300'
@@ -561,6 +725,55 @@ const DriverVerification: React.FC = () => {
                           }`}
                         >
                           {selectedDriver.is_available ? 'Set Unavailable' : 'Set Available'}
+                        </button>
+                      </div>
+                    )}
+                    
+                    {/* Toggle Verification Status Button */}
+                    {!selectedDriver._isPartnerWithoutProfile && (
+                      <div className="mt-4 flex flex-col space-y-2">
+                        <button
+                          onClick={toggleVerificationStatus}
+                          disabled={processingAction}
+                          className={`px-4 py-2 rounded-md text-white text-sm flex items-center justify-center ${
+                            selectedDriver.verification_status === 'verified'
+                              ? 'bg-yellow-500 hover:bg-yellow-600 dark:bg-yellow-600 dark:hover:bg-yellow-700'
+                              : 'bg-blue-600 hover:bg-blue-700 dark:bg-blue-700 dark:hover:bg-blue-600'
+                          }`}
+                        >
+                          {processingAction ? (
+                            <Loader2 className="animate-spin h-4 w-4 mr-2" />
+                          ) : selectedDriver.verification_status === 'verified' ? (
+                            <XCircle className="h-4 w-4 mr-2" />
+                          ) : (
+                            <CheckCircle className="h-4 w-4 mr-2" />
+                          )}
+                          {selectedDriver.verification_status === 'verified' 
+                            ? 'Revert to Pending' 
+                            : 'Mark as Verified'}
+                        </button>
+                      </div>
+                    )}
+                    
+                    {/* Create Driver Profile Button */}
+                    {selectedDriver._isPartnerWithoutProfile && (
+                      <div className="mt-4">
+                        <button
+                          onClick={() => createDriverProfile(selectedDriver.user_id)}
+                          disabled={creatingProfile}
+                          className="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 flex items-center justify-center"
+                        >
+                          {creatingProfile ? (
+                            <>
+                              <Loader2 className="animate-spin h-4 w-4 mr-2" />
+                              Creating Profile...
+                            </>
+                          ) : (
+                            <>
+                              <UserPlus className="h-4 w-4 mr-2" />
+                              Create Driver Profile
+                            </>
+                          )}
                         </button>
                       </div>
                     )}
@@ -650,15 +863,15 @@ const DriverVerification: React.FC = () => {
                                   </span>
                                 )}
                                 
-                                <a
-                                  href={document.file_url}
+                                <a 
+                                  href={document.file_url} 
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   className="p-1 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400"
                                   title="View Document"
                                   onClick={(e) => e.stopPropagation()}
                                 >
-                                  <Eye className="h-4 w-4" />
+                                  <Eye className="h-5 w-5" />
                                 </a>
                                 
                                 <a
@@ -668,7 +881,7 @@ const DriverVerification: React.FC = () => {
                                   title="Download Document"
                                   onClick={(e) => e.stopPropagation()}
                                 >
-                                  <Download className="h-4 w-4" />
+                                  <Download className="h-5 w-5" />
                                 </a>
                               </div>
                             </div>
@@ -765,9 +978,18 @@ const DriverVerification: React.FC = () => {
       {/* Approve Confirmation Modal */}
       {showApproveConfirm && selectedDriver && (
         <div className="fixed inset-0 bg-black/50 dark:bg-black/70 z-50 overflow-y-auto flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full">
-            <div className="px-6 py-4 border-b dark:border-gray-700">
+          <div 
+            className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-6 py-4 border-b dark:border-gray-700 flex justify-between items-center">
               <h3 className="text-lg font-medium text-gray-900 dark:text-white">Confirm Driver Approval</h3>
+              <button 
+                onClick={() => setShowApproveConfirm(false)} 
+                className="text-gray-400 hover:text-gray-500 dark:text-gray-500 dark:hover:text-gray-400"
+              >
+                <X className="h-5 w-5" />
+              </button>
             </div>
             
             <div className="p-6">
@@ -811,9 +1033,18 @@ const DriverVerification: React.FC = () => {
       {/* Decline Confirmation Modal */}
       {showDeclineConfirm && selectedDriver && (
         <div className="fixed inset-0 bg-black/50 dark:bg-black/70 z-50 overflow-y-auto flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full">
-            <div className="px-6 py-4 border-b dark:border-gray-700">
+          <div 
+            className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-6 py-4 border-b dark:border-gray-700 flex justify-between items-center">
               <h3 className="text-lg font-medium text-gray-900 dark:text-white">Decline Verification</h3>
+              <button 
+                onClick={() => setShowDeclineConfirm(false)}
+                className="text-gray-400 hover:text-gray-500 dark:text-gray-500 dark:hover:text-gray-400"
+              >
+                <X className="h-5 w-5" />
+              </button>
             </div>
             
             <div className="p-6">
