@@ -172,6 +172,9 @@ const DriverVerification: React.FC = () => {
     try {
       setLoadingLogs(true);
       
+      // Refresh the session before making the API call
+      await supabase.auth.refreshSession();
+      
       // Use the admin API to fetch activity logs
       const response = await adminApi.fetchDriverLogs(driverId);
       
@@ -302,6 +305,9 @@ const DriverVerification: React.FC = () => {
     try {
       setProcessingAction(true);
       
+      // Refresh the session before making the API call
+      await supabase.auth.refreshSession();
+      
       // Call the admin API to approve the driver
       await adminApi.approveDriver(selectedDriver.id);
       
@@ -352,6 +358,9 @@ const DriverVerification: React.FC = () => {
     
     try {
       setProcessingAction(true);
+      
+      // Refresh the session before making the API call
+      await supabase.auth.refreshSession();
       
       // Call the admin API to decline the driver
       await adminApi.declineDriver(selectedDriver.id, declineReason);
@@ -428,6 +437,9 @@ const DriverVerification: React.FC = () => {
 
   const toggleDriverAvailability = async (driver: Driver, newStatus: boolean) => {
     try {
+      // Refresh the session before making the API call
+      await supabase.auth.refreshSession();
+      
       // Call the admin API to toggle driver availability
       await adminApi.toggleDriverAvailability(driver.id, newStatus);
       
