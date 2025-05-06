@@ -43,7 +43,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Initialize Supabase client with token
+    // Create supabase client with anonymous key for user verification
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL") || "",
       Deno.env.get("SUPABASE_ANON_KEY") || "",
@@ -60,12 +60,12 @@ Deno.serve(async (req) => {
       }
     );
 
-    // Verify user and check admin status
+    // Verify user
     const { data: { user }, error: authError } = await supabase.auth.getUser();
     
     if (authError || !user) {
       return new Response(
-        JSON.stringify({ error: "Invalid or expired token" }),
+        JSON.stringify({ error: "Invalid or expired token", details: authError?.message }),
         {
           status: 401,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -118,7 +118,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Update driver status to verified
+    // Update driver status to verified using admin client
     const { error: updateError } = await supabaseAdmin
       .from("drivers")
       .update({
@@ -131,7 +131,7 @@ Deno.serve(async (req) => {
     if (updateError) {
       console.error("Error updating driver:", updateError);
       return new Response(
-        JSON.stringify({ error: "Failed to update driver verification status" }),
+        JSON.stringify({ error: "Failed to update driver verification status", details: updateError }),
         {
           status: 500,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -139,7 +139,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Update documents to verified
+    // Update documents to verified using admin client
     const { error: docsError } = await supabaseAdmin
       .from("driver_documents")
       .update({
@@ -152,7 +152,7 @@ Deno.serve(async (req) => {
       // Continue anyway since the driver is verified
     }
     
-    // Log the approval action
+    // Log the approval action using admin client
     await supabaseAdmin.from("activity_logs").insert({
       driver_id: driverId,
       admin_id: user.id,
@@ -178,7 +178,7 @@ Deno.serve(async (req) => {
     console.error("Unexpected error:", error);
     
     return new Response(
-      JSON.stringify({ error: "An unexpected error occurred" }),
+      JSON.stringify({ error: "An unexpected error occurred", details: error.message }),
       {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },

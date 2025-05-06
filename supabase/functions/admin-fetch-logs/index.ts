@@ -30,19 +30,25 @@ Deno.serve(async (req) => {
 
     const token = authHeader.replace("Bearer ", "");
     
-    // Use admin client to verify the JWT token
-    const supabaseAdmin = createClient(
+    // Create supabase client with anonymous key for user verification
+    const supabase = createClient(
       Deno.env.get("SUPABASE_URL") || "",
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "",
+      Deno.env.get("SUPABASE_ANON_KEY") || "",
       {
         auth: {
           persistSession: false,
-        }
+          autoRefreshToken: false,
+        },
+        global: {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        },
       }
     );
 
-    // Verify user using admin client
-    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
+    // Verify user and check admin status
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
     
     if (authError || !user) {
       return new Response(
@@ -55,7 +61,7 @@ Deno.serve(async (req) => {
     }
 
     // Check if user is admin or support
-    const { data: userData, error: userError } = await supabaseAdmin
+    const { data: userData, error: userError } = await supabase
       .from("users")
       .select("user_role")
       .eq("id", user.id)
@@ -118,7 +124,18 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Fetch activity logs for the specified driver
+    // Create a new Supabase client with service role to bypass RLS
+    const supabaseAdmin = createClient(
+      Deno.env.get("SUPABASE_URL") || "",
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "",
+      {
+        auth: {
+          persistSession: false,
+        }
+      }
+    );
+
+    // Fetch activity logs for the specified driver using admin privileges
     const { data: logs, error: logsError } = await supabaseAdmin
       .from("activity_logs")
       .select(`
