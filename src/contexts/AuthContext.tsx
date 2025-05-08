@@ -67,6 +67,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const authStateChangeSubscribed = useRef(false);
   const tokenAuthAttemptedRef = useRef(false);
   const isRefreshingRef = useRef(false);
+  const logoutInProgressRef = useRef(false);
 
   // Function to fetch user data
   const fetchUserData = async (userId: string) => {
@@ -99,16 +100,34 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Handle signed out state completely
   const handleSignedOut = async () => {
     console.log('Handling signed out state...');
-    // Clear all auth state
-    setSession(null);
-    setUser(null);
-    setUserData(null);
-    
-    // Ensure we're fully signed out from Supabase
+    // Set logout flag to prevent race conditions
+    logoutInProgressRef.current = true;
+
     try {
-      await supabase.auth.signOut();
+      // Clear all auth state
+      setSession(null);
+      setUser(null);
+      setUserData(null);
+      
+      // Ensure we're fully signed out from Supabase
+      await supabase.auth.signOut({
+        scope: 'global' // Use global scope to clear ALL sessions
+      });
+
+      // Clear any stored auth data from localStorage
+      localStorage.removeItem('supabase.auth.token');
+      
+      // Force reload window storage event to ensure other tabs know about the logout
+      window.dispatchEvent(new StorageEvent('storage', {
+        key: 'supabase.auth.token',
+        newValue: null,
+        oldValue: localStorage.getItem('supabase.auth.token'),
+      }));
+
     } catch (error) {
       console.error('Error during cleanup signOut:', error);
+    } finally {
+      logoutInProgressRef.current = false;
     }
   };
 
@@ -292,12 +311,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (userData?.user_role) {
             try {
               // Refresh session with retry logic
-              const { data } = await retryWithExponentialBackoff(
+              const { data: refreshData } = await retryWithExponentialBackoff(
                 async () => await supabase.auth.refreshSession()
               );
               
-              if (data.session) {
-                setSession(data.session);
+              if (refreshData.session) {
+                setSession(refreshData.session);
               }
             } catch (refreshError: any) {
               console.error('Error refreshing session after auth change:', refreshError);
@@ -513,8 +532,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const signOut = async () => {
     try {
+      // If already logging out, don't try again
+      if (logoutInProgressRef.current) {
+        console.log('Logout already in progress, ignoring duplicate request');
+        return;
+      }
+      
       setLoading(true);
       await handleSignedOut();
+      
+      // Force a navigation or reload to ensure all component states are cleared
+      window.location.href = '/login';
     } catch (error) {
       console.error('Error signing out:', error);
     } finally {

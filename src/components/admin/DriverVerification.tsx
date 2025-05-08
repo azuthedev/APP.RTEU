@@ -88,7 +88,7 @@ const DriverVerification: React.FC = () => {
   const [creatingProfile, setCreatingProfile] = useState(false);
   
   const { toast } = useToast();
-  const { userData } = useAuth();
+  const { userData, refreshSession } = useAuth();
 
   useEffect(() => {
     fetchDrivers();
@@ -172,30 +172,17 @@ const DriverVerification: React.FC = () => {
     try {
       setLoadingLogs(true);
       
-      // Refresh the session before making the API call
-      await supabase.auth.refreshSession();
-      
       // Use the admin API to fetch activity logs
-      const response = await adminApi.fetchDriverLogs(driverId);
+      // No need to refresh session as the adminApi handles authentication
+      const logsData = await adminApi.fetchDriverLogs(driverId);
       
-      // Check if response is valid
-      if (!response) {
-        throw new Error('No response received from server');
-      }
-      
-      // Check if response contains an error property
-      if (response.error) {
-        throw new Error(response.error);
-      }
-      
-      // Ensure response data is an array
-      if (Array.isArray(response)) {
-        setActivityLogs(response);
-      } else if (response && typeof response === 'object' && Array.isArray(response.data)) {
-        // Handle if API returns an object with a data property
-        setActivityLogs(response.data);
+      // Ensure logsData is properly processed
+      if (Array.isArray(logsData)) {
+        setActivityLogs(logsData);
+      } else if (logsData && typeof logsData === 'object' && Array.isArray(logsData.data)) {
+        setActivityLogs(logsData.data);
       } else {
-        console.error('Unexpected response format from fetchDriverLogs API:', response);
+        console.error('Unexpected response format from fetchDriverLogs API:', logsData);
         setActivityLogs([]);
         toast({
           variant: "destructive",
@@ -306,7 +293,9 @@ const DriverVerification: React.FC = () => {
       setProcessingAction(true);
       
       // Refresh the session before making the API call
-      await supabase.auth.refreshSession();
+      if (refreshSession) {
+        await refreshSession();
+      }
       
       // Call the admin API to approve the driver
       await adminApi.approveDriver(selectedDriver.id);
@@ -360,7 +349,9 @@ const DriverVerification: React.FC = () => {
       setProcessingAction(true);
       
       // Refresh the session before making the API call
-      await supabase.auth.refreshSession();
+      if (refreshSession) {
+        await refreshSession();
+      }
       
       // Call the admin API to decline the driver
       await adminApi.declineDriver(selectedDriver.id, declineReason);
@@ -438,7 +429,9 @@ const DriverVerification: React.FC = () => {
   const toggleDriverAvailability = async (driver: Driver, newStatus: boolean) => {
     try {
       // Refresh the session before making the API call
-      await supabase.auth.refreshSession();
+      if (refreshSession) {
+        await refreshSession();
+      }
       
       // Call the admin API to toggle driver availability
       await adminApi.toggleDriverAvailability(driver.id, newStatus);

@@ -13,7 +13,7 @@ async function refreshSession() {
 
 const callEdgeFunction = async (functionName, payload) => {
   try {
-    // First get a fresh token by refreshing the session
+    // Explicitly refresh the session before every call to ensure token validity
     await refreshSession();
     
     // Get current session after refresh
