@@ -1,5 +1,5 @@
-// This edge function fetches activity logs for admin dashboard
-// It supports both driver logs and booking logs
+// This edge function assigns a driver to a booking for admin dashboard
+// It uses service role to bypass RLS policies
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js@2.38.4";
@@ -32,7 +32,7 @@ serve(async (req) => {
       }
     );
 
-    // Verify user has admin privileges
+    // Verify the user making the request has admin privileges
     const authHeader = req.headers.get("Authorization");
     if (!authHeader) {
       return new Response(
@@ -57,7 +57,7 @@ serve(async (req) => {
       );
     }
 
-    // Get user role to verify admin status
+    // Get the user's role to verify they are an admin
     const { data: userRoleData, error: userRoleError } = await supabaseClient
       .from("users")
       .select("user_role")
@@ -75,34 +75,9 @@ serve(async (req) => {
     }
 
     // Parse request body
-    const { driverId, bookingId, type = "driver" } = await req.json();
+    const { bookingId, driverId } = await req.json();
 
-    // Determine which log type to fetch
-    let data, error;
-    
-    if (type === "driver" && driverId) {
-      // Fetch driver activity logs
-      ({ data, error } = await supabaseClient
-        .from("activity_logs")
-        .select(`
-          *,
-          admin:admin_id(name, email)
-        `)
-        .eq("driver_id", driverId)
-        .order("created_at", { ascending: false }));
-    } 
-    else if (type === "booking" && bookingId) {
-      // Fetch booking activity logs
-      ({ data, error } = await supabaseClient
-        .from("booking_activity_logs")
-        .select(`
-          *,
-          user:user_id(name, email)
-        `)
-        .eq("booking_id", bookingId)
-        .order("created_at", { ascending: false }));
-    } 
-    else {
+    if (!bookingId || !driverId) {
       return new Response(
         JSON.stringify({ error: "Missing required parameters" }),
         {
@@ -112,22 +87,63 @@ serve(async (req) => {
       );
     }
 
+    // Get the driver's user ID
+    const { data: driverData, error: driverError } = await supabaseClient
+      .from("drivers")
+      .select("user_id")
+      .eq("id", driverId)
+      .single();
+
+    if (driverError || !driverData?.user_id) {
+      return new Response(
+        JSON.stringify({ error: "Driver not found" }),
+        {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    // Update the booking with the driver's user ID
+    const { data: updatedBooking, error } = await supabaseClient
+      .from("trips")
+      .update({ 
+        driver_id: driverData.user_id,
+        status: "accepted" // Optionally change status
+      })
+      .eq("id", bookingId)
+      .select()
+      .single();
+
     if (error) {
       throw error;
     }
 
+    // Log the activity
+    await supabaseClient.from("booking_activity_logs").insert({
+      booking_id: bookingId,
+      user_id: userData.user.id,
+      action: "driver_assigned",
+      details: { 
+        driver_id: driverId,
+        driver_user_id: driverData.user_id,
+        timestamp: new Date().toISOString()
+      },
+      created_at: new Date().toISOString()
+    });
+
     return new Response(
-      JSON.stringify(data),
+      JSON.stringify({ success: true, data: updatedBooking }),
       {
         status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       }
     );
   } catch (error) {
-    console.error(`Error in admin-fetch-logs:`, error);
+    console.error("Error in admin-assign-driver:", error);
 
     return new Response(
-      JSON.stringify({ error: error.message || "Failed to fetch logs" }),
+      JSON.stringify({ error: error.message || "Failed to assign driver" }),
       {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },

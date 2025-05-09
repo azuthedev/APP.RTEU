@@ -1,5 +1,5 @@
-// This edge function fetches activity logs for admin dashboard
-// It supports both driver logs and booking logs
+// This edge function fetches bookings data for admin dashboard
+// It uses the service role to bypass RLS policies
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js@2.38.4";
@@ -21,6 +21,7 @@ serve(async (req) => {
 
   try {
     // Create a Supabase client with the service role key
+    // This allows bypassing RLS policies
     const supabaseClient = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
@@ -32,7 +33,7 @@ serve(async (req) => {
       }
     );
 
-    // Verify user has admin privileges
+    // Verify the user making the request has admin privileges
     const authHeader = req.headers.get("Authorization");
     if (!authHeader) {
       return new Response(
@@ -57,7 +58,7 @@ serve(async (req) => {
       );
     }
 
-    // Get user role to verify admin status
+    // Get the user's role to verify they are an admin
     const { data: userRoleData, error: userRoleError } = await supabaseClient
       .from("users")
       .select("user_role")
@@ -74,60 +75,32 @@ serve(async (req) => {
       );
     }
 
-    // Parse request body
-    const { driverId, bookingId, type = "driver" } = await req.json();
-
-    // Determine which log type to fetch
-    let data, error;
-    
-    if (type === "driver" && driverId) {
-      // Fetch driver activity logs
-      ({ data, error } = await supabaseClient
-        .from("activity_logs")
-        .select(`
-          *,
-          admin:admin_id(name, email)
-        `)
-        .eq("driver_id", driverId)
-        .order("created_at", { ascending: false }));
-    } 
-    else if (type === "booking" && bookingId) {
-      // Fetch booking activity logs
-      ({ data, error } = await supabaseClient
-        .from("booking_activity_logs")
-        .select(`
-          *,
-          user:user_id(name, email)
-        `)
-        .eq("booking_id", bookingId)
-        .order("created_at", { ascending: false }));
-    } 
-    else {
-      return new Response(
-        JSON.stringify({ error: "Missing required parameters" }),
-        {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      );
-    }
+    // Fetch bookings with joins to related tables
+    const { data: bookings, error } = await supabaseClient
+      .from("trips")
+      .select(`
+        *,
+        user:users!trips_user_id_fkey(name, email, phone),
+        driver:users!trips_driver_id_fkey(name, email, phone)
+      `)
+      .order("datetime", { ascending: false });
 
     if (error) {
       throw error;
     }
 
     return new Response(
-      JSON.stringify(data),
+      JSON.stringify(bookings),
       {
         status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       }
     );
   } catch (error) {
-    console.error(`Error in admin-fetch-logs:`, error);
+    console.error("Error in admin-fetch-bookings:", error);
 
     return new Response(
-      JSON.stringify({ error: error.message || "Failed to fetch logs" }),
+      JSON.stringify({ error: error.message || "Failed to fetch bookings" }),
       {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
