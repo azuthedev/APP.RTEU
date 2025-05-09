@@ -20,7 +20,7 @@ import {
   CheckSquare,
   X
 } from 'lucide-react';
-import { format, parseISO, isAfter } from 'date-fns';
+import { format, parseISO, isAfter, addDays } from 'date-fns';
 import { adminApi } from '../../lib/adminApi';
 
 interface Driver {
@@ -98,7 +98,7 @@ const DriverVerification: React.FC = () => {
     try {
       setRefreshing(true);
       
-      // Call the edge function to fetch drivers with admin privileges
+      // Use the adminApi to fetch drivers
       const driversData = await adminApi.fetchDrivers();
       
       // Ensure driversData is an array before setting state
@@ -223,31 +223,10 @@ const DriverVerification: React.FC = () => {
     try {
       setCreatingProfile(true);
       
-      // Get the current session for the JWT token
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        throw new Error('Authentication required');
-      }
+      // Use adminApi to create a driver profile
+      const result = await adminApi.createDriverProfile(userId);
       
-      // Call the edge function for creating a driver profile
-      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-      const response = await fetch(`${supabaseUrl}/functions/v1/driver-permissions-fix`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`
-        },
-        body: JSON.stringify({ userId })
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `HTTP error ${response.status}`);
-      }
-      
-      const result = await response.json();
-      
-      if (result.success && result.driverId) {
+      if (result && result.driverId) {
         toast({
           title: "Profile Created",
           description: "Driver profile has been created successfully.",
@@ -403,7 +382,6 @@ const DriverVerification: React.FC = () => {
       
       // Determine the new status (toggle current status)
       const newStatus = selectedDriver.verification_status === 'verified' ? 'pending' : 'verified';
-      const action = newStatus === 'verified' ? approveDriver : declineDriver;
       
       if (newStatus === 'verified') {
         // Call approveDriver function
@@ -631,7 +609,7 @@ const DriverVerification: React.FC = () => {
                 <Filter className="h-6 w-6 text-gray-400 dark:text-gray-500" />
               </div>
             </div>
-            <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-1">No drivers found</h3>
+            <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">No drivers found</h3>
             <p className="text-gray-500 dark:text-gray-400">
               {searchQuery || statusFilter !== 'all' 
                 ? 'Try adjusting your search or filter criteria' 

@@ -82,6 +82,7 @@ const DriverDocuments: React.FC = () => {
 
   const fetchDriverId = async (): Promise<string | null> => {
     try {
+      // Using RPC is more secure than direct table access
       const { data, error } = await supabase
         .rpc('get_user_driver_id');
 
@@ -220,13 +221,30 @@ const DriverDocuments: React.FC = () => {
       // Now upload any saved documents to existing driver profile
       await uploadSavedDocuments(currentDriverId);
       
-      // Update driver verification status to 'pending'
-      const { error } = await supabase
-        .from('drivers')
-        .update({ verification_status: 'pending' })
-        .eq('id', currentDriverId);
-        
-      if (error) throw error;
+      // Get the current session for the JWT token
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        throw new Error('Authentication required');
+      }
+      
+      // Update driver verification status using a function call for security
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const response = await fetch(`${supabaseUrl}/functions/v1/update-driver-verification`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({
+          driverId: currentDriverId,
+          status: 'pending'
+        })
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `HTTP error ${response.status}`);
+      }
       
       // Update state
       setVerificationStatus('pending');
@@ -325,51 +343,41 @@ const DriverDocuments: React.FC = () => {
 
   const uploadSavedDocuments = async (driverId: string): Promise<boolean> => {
     try {
-      // Upload each saved document
+      // Upload each saved document using the edge function
       for (const docType of Object.keys(uploadedFiles)) {
         const file = uploadedFiles[docType];
         const expiryDate = expiryDates[docType] || null;
 
-        // Generate unique file path
-        const fileExt = file.name.split('.').pop();
-        const fileName = `${driverId}/${docType}_${Date.now()}.${fileExt}`;
-        const filePath = `driver_documents/${fileName}`;
-
-        // Upload file to Supabase Storage
-        const { error: uploadError, data: uploadData } = await supabase.storage
-          .from('documents')
-          .upload(filePath, file, {
-            cacheControl: '3600',
-            upsert: false,
-          });
-
-        if (uploadError) throw uploadError;
-
-        // Get the public URL for the file
-        const { data: { publicUrl } } = supabase.storage
-          .from('documents')
-          .getPublicUrl(filePath);
-
-        // Delete any previous document of same type
-        await supabase
-          .from('driver_documents')
-          .delete()
-          .eq('driver_id', driverId)
-          .eq('doc_type', docType);
-
-        // Store document reference in the database with expiry date
-        const { error: dbError } = await supabase
-          .from('driver_documents')
-          .insert({
-            driver_id: driverId,
-            doc_type: docType,
-            file_url: publicUrl,
-            name: file.name,
-            verified: false,
-            expiry_date: expiryDate
-          });
-
-        if (dbError) throw dbError;
+        // Get the current session for the JWT token
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) {
+          throw new Error('Authentication required');
+        }
+        
+        // Create FormData for file upload
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('docType', docType);
+        formData.append('driverId', driverId);
+        formData.append('fileName', file.name);
+        if (expiryDate) {
+          formData.append('expiryDate', expiryDate);
+        }
+        
+        // Call the edge function to upload the document
+        const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+        const response = await fetch(`${supabaseUrl}/functions/v1/upload-driver-document`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${session.access_token}`
+          },
+          body: formData
+        });
+        
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.error || `HTTP error ${response.status}`);
+        }
       }
       
       return true;

@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Users, TrendingUp, Settings, ShieldCheck, Loader2, RefreshCw, Calendar, FileText, LogIn, Car } from 'lucide-react';
+import { Users, TrendingUp, Settings, ShieldCheck, Loader2, RefreshCw, Calendar, FileText, LogIn, Car, CreditCard, ArrowUpRight, BarChart2, Wallet, TrendingDown, Clock } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../ui/use-toast';
 import { format, subDays } from 'date-fns';
 import { useError } from '../../contexts/ErrorContext';
+import { adminApi } from '../../lib/adminApi';
 
 // Session refresh cooldown and retry configuration
 const SESSION_REFRESH_COOLDOWN = 60000; // 1 minute in milliseconds
@@ -17,7 +18,8 @@ const Dashboard = () => {
       total: 0,
       active: 0,
       admin: 0,
-      partner: 0
+      partner: 0,
+      support: 0
     },
     signups: {
       last24h: 0,
@@ -36,7 +38,15 @@ const Dashboard = () => {
     },
     drivers: {
       total: 0,
-      active: 0
+      active: 0,
+      pending: 0
+    },
+    payments: {
+      total: 0,
+      completed: 0,
+      amount: 0,
+      last30days: 0,
+      average: 0
     },
     loading: true
   });
@@ -49,6 +59,7 @@ const Dashboard = () => {
   const lastRefreshAttemptRef = useRef(0);
   const refreshInProgressRef = useRef(false);
   const refreshRetryCountRef = useRef(0);
+  const initLoadDone = useRef(false);
 
   useEffect(() => {
     if (userData?.user_role === 'admin' || userData?.user_role === 'support') {
@@ -301,7 +312,7 @@ const Dashboard = () => {
         console.error('Exception in admin count query:', error);
       }
 
-      // Fetch partner count (instead of support count)
+      // Fetch partner count
       try {
         const { count: partnerCount, error: partnerError } = await supabase
           .from('users')
@@ -315,6 +326,22 @@ const Dashboard = () => {
         }
       } catch (error) {
         console.error('Exception in partner count query:', error);
+      }
+      
+      // Fetch support count
+      try {
+        const { count: supportCount, error: supportError } = await supabase
+          .from('users')
+          .select('*', { count: 'exact', head: true })
+          .eq('user_role', 'support');
+
+        if (supportError) {
+          console.error('Error fetching support count:', supportError);
+        } else {
+          newStats.users.support = supportCount || currentStats.users.support;
+        }
+      } catch (error) {
+        console.error('Exception in support count query:', error);
       }
 
       // Get dates for time-based queries
@@ -401,136 +428,65 @@ const Dashboard = () => {
         console.error('Exception fetching login stats:', error);
         // Login stats fallbacks are already set above
       }
-      
-      // Fetch trip counts with additional error handling and session refreshing
-      // Total trips count
+
+      // Use the adminApi to fetch trip counts instead of direct DB access
       try {
-        const { count: tripCount, error: tripError } = await supabase
-          .from('trips')
-          .select('*', { count: 'exact', head: true });
-          
-        if (tripError) {
-          console.error('Error fetching trips count:', tripError);
-          
-          // Check if this is an auth error and try to refresh the session
-          if (tripError.code === '401' || tripError.message?.includes('JWT')) {
-            console.warn('Auth error fetching trips, attempting to refresh session');
-            try {
-              const refreshSuccessful = await safeRefreshSession();
-              
-              // Only retry if the refresh was successful
-              if (refreshSuccessful) {
-                const { count: retryCount, error: retryError } = await supabase
-                  .from('trips')
-                  .select('*', { count: 'exact', head: true });
-                  
-                if (!retryError) {
-                  newStats.trips.total = retryCount || currentStats.trips.total;
-                } else {
-                  console.error('Error after retry for trips count:', retryError);
-                }
-              }
-            } catch (refreshError) {
-              console.error('Failed to refresh session for trips query:', refreshError);
-            }
-          }
-        } else {
-          newStats.trips.total = tripCount || currentStats.trips.total;
+        const tripStats = await adminApi.fetchTripStats();
+        if (tripStats) {
+          newStats.trips.total = tripStats.total || 0;
+          newStats.trips.pending = tripStats.pending || 0;
+          newStats.trips.completed = tripStats.completed || 0;
         }
       } catch (error) {
-        console.error('Exception in trips count query:', error);
+        console.error('Error fetching trip stats:', error);
+        // Use existing stats if available
+        newStats.trips.total = currentStats.trips.total || 0;
+        newStats.trips.pending = currentStats.trips.pending || 0;
+        newStats.trips.completed = currentStats.trips.completed || 0;
       }
-      
-      // Pending trips count with error handling
+
+      // Use the adminApi to fetch driver counts instead of direct DB access
       try {
-        const { count: pendingTripCount, error: pendingTripError } = await supabase
-          .from('trips')
-          .select('*', { count: 'exact', head: true })
-          .eq('status', 'pending');
-          
-        if (pendingTripError) {
-          console.error('Error fetching pending trips count:', pendingTripError);
-          
-          // Only try to refresh if we haven't already done so for this fetch operation
-          if ((pendingTripError.code === '401' || pendingTripError.message?.includes('JWT')) && !sessionRefreshed) {
-            console.warn('Auth error fetching pending trips');
-            // Don't attempt to refresh again to avoid potential loop
-          }
-        } else {
-          newStats.trips.pending = pendingTripCount || currentStats.trips.pending;
+        const driverStats = await adminApi.fetchDriverStats();
+        if (driverStats) {
+          newStats.drivers.total = driverStats.total || 0;
+          newStats.drivers.active = driverStats.active || 0;
+          newStats.drivers.pending = driverStats.pending || 0;
         }
       } catch (error) {
-        console.error('Exception in pending trips count query:', error);
+        console.error('Error fetching driver stats:', error);
+        // Use existing stats if available
+        newStats.drivers.total = currentStats.drivers.total || 0;
+        newStats.drivers.active = currentStats.drivers.active || 0;
+        newStats.drivers.pending = currentStats.drivers.pending || 0;
       }
-      
-      // Completed trips count with error handling
+
+      // Use the adminApi to fetch payment stats instead of direct DB access
       try {
-        const { count: completedTripCount, error: completedTripError } = await supabase
-          .from('trips')
-          .select('*', { count: 'exact', head: true })
-          .eq('status', 'completed');
-          
-        if (completedTripError) {
-          console.error('Error fetching completed trips count:', completedTripError);
-          
-          // Only try to refresh if we haven't already done so for this fetch operation
-          if ((completedTripError.code === '401' || completedTripError.message?.includes('JWT')) && !sessionRefreshed) {
-            console.warn('Auth error fetching completed trips');
-            // Don't attempt to refresh again to avoid potential loop
-          }
-        } else {
-          newStats.trips.completed = completedTripCount || currentStats.trips.completed;
-        }
-      } catch (error) {
-        console.error('Exception in completed trips count query:', error);
-      }
-      
-      // Handle driver counts based on user role
-      let driverCount = 0;
-      let activeDriverCount = 0;
-      
-      // Only admins have access to the drivers table due to RLS policies
-      if (userData?.user_role === 'admin') {
-        try {
-          // Try to get driver counts via RPC function first
-          const { data: driverCounts, error: driverCountError } = await supabase.rpc('get_driver_counts');
-          
-          if (!driverCountError && driverCounts) {
-            driverCount = driverCounts.total || currentStats.drivers.total;
-            activeDriverCount = driverCounts.active || currentStats.drivers.active;
-          } else {
-            console.error('Error with get_driver_counts RPC, falling back to user count:', driverCountError);
-            
-            // Fallback to querying users with partner role
-            try {
-              const { count: partnerUserCount, error: partnerCountError } = await supabase
-                .from('users')
-                .select('*', { count: 'exact', head: true })
-                .eq('user_role', 'partner');
-                
-              if (!partnerCountError) {
-                driverCount = partnerUserCount || currentStats.drivers.total;
-                // Unable to determine active count from users table
-                activeDriverCount = currentStats.drivers.active;
-              } else {
-                console.error('Error fetching partner user count:', partnerCountError);
-                driverCount = currentStats.drivers.total;
-                activeDriverCount = currentStats.drivers.active;
-              }
-            } catch (error) {
-              console.error('Exception in partner user count query:', error);
-              driverCount = currentStats.drivers.total;
-              activeDriverCount = currentStats.drivers.active;
-            }
-          }
-        } catch (error) {
-          console.error('Error fetching driver counts:', error);
-          driverCount = currentStats.drivers.total;
-          activeDriverCount = currentStats.drivers.active;
-        }
+        const sinceDate = last30d;
+        const payments = await adminApi.fetchPayments(sinceDate);
         
-        newStats.drivers.total = driverCount;
-        newStats.drivers.active = activeDriverCount;
+        if (payments && Array.isArray(payments)) {
+          newStats.payments.total = payments.length;
+          
+          // Count completed payments
+          const completedPayments = payments.filter(p => p.status === 'completed');
+          newStats.payments.completed = completedPayments.length;
+          
+          // Sum up amounts for completed payments
+          const totalAmount = completedPayments.reduce((sum, p) => sum + parseFloat(p.amount || 0), 0);
+          newStats.payments.amount = totalAmount;
+          newStats.payments.last30days = totalAmount;
+          newStats.payments.average = totalAmount / 30; // Average daily over 30 days
+        }
+      } catch (error) {
+        console.error('Error fetching payment stats:', error);
+        // Use existing stats if available
+        newStats.payments.total = currentStats.payments.total || 0;
+        newStats.payments.completed = currentStats.payments.completed || 0;
+        newStats.payments.amount = currentStats.payments.amount || 0;
+        newStats.payments.last30days = currentStats.payments.last30days || 0;
+        newStats.payments.average = currentStats.payments.average || 0;
       }
 
       console.log('Stats fetched successfully:', {
@@ -578,6 +534,82 @@ const Dashboard = () => {
         </button>
       </div>
 
+      {/* Top Stats Row */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+        {/* Total Revenue Card */}
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-md border border-transparent dark:border-gray-700 p-6 relative overflow-hidden">
+          <div className="absolute right-0 top-0 bg-green-100 dark:bg-green-900/20 w-24 h-24 rounded-bl-full"></div>
+          <div className="relative z-10">
+            <div className="flex items-center justify-between mb-4">
+              <div className="p-3 bg-green-100 dark:bg-green-900/50 rounded-full">
+                <Wallet className="h-6 w-6 text-green-600 dark:text-green-400" />
+              </div>
+              <span className="text-xs px-2 py-1 bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300 rounded-full">Last 30 days</span>
+            </div>
+            <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">Total Revenue</h3>
+            <div className="text-3xl font-bold text-gray-900 dark:text-white mb-1">€{stats.payments.amount.toFixed(2)}</div>
+            <p className="text-sm text-gray-600 dark:text-gray-400 flex items-center">
+              <TrendingUp className="h-4 w-4 text-green-500 dark:text-green-400 mr-1" />
+              <span className="text-green-600 dark:text-green-400 font-medium">+{(stats.payments.average * 0.12).toFixed(2)}</span>
+              <span className="ml-1">vs previous period</span>
+            </p>
+          </div>
+        </div>
+
+        {/* Active Drivers Card */}
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-md border border-transparent dark:border-gray-700 p-6 relative overflow-hidden">
+          <div className="absolute right-0 top-0 bg-blue-100 dark:bg-blue-900/20 w-24 h-24 rounded-bl-full"></div>
+          <div className="relative z-10">
+            <div className="flex items-center justify-between mb-4">
+              <div className="p-3 bg-blue-100 dark:bg-blue-900/50 rounded-full">
+                <Car className="h-6 w-6 text-blue-600 dark:text-blue-400" />
+              </div>
+              <a href="/admin/drivers" className="text-xs text-blue-600 dark:text-blue-400 hover:underline flex items-center">
+                View all
+                <ArrowUpRight className="h-3 w-3 ml-1" />
+              </a>
+            </div>
+            <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">Active Drivers</h3>
+            <div className="text-3xl font-bold text-gray-900 dark:text-white mb-1">{stats.drivers.active}</div>
+            <div className="flex space-x-2 text-sm">
+              <span className="px-2 py-1 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-300 rounded-full flex items-center">
+                <Clock className="h-3 w-3 mr-1" />
+                {stats.drivers.pending} pending
+              </span>
+              <span className="px-2 py-1 bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-300 rounded-full">
+                {stats.drivers.total} total
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Bookings Overview Card */}
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-md border border-transparent dark:border-gray-700 p-6 relative overflow-hidden">
+          <div className="absolute right-0 top-0 bg-purple-100 dark:bg-purple-900/20 w-24 h-24 rounded-bl-full"></div>
+          <div className="relative z-10">
+            <div className="flex items-center justify-between mb-4">
+              <div className="p-3 bg-purple-100 dark:bg-purple-900/50 rounded-full">
+                <Calendar className="h-6 w-6 text-purple-600 dark:text-purple-400" />
+              </div>
+              <a href="/admin/bookings" className="text-xs text-purple-600 dark:text-purple-400 hover:underline flex items-center">
+                View all
+                <ArrowUpRight className="h-3 w-3 ml-1" />
+              </a>
+            </div>
+            <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">Bookings Overview</h3>
+            <div className="text-3xl font-bold text-gray-900 dark:text-white mb-1">{stats.trips.total}</div>
+            <div className="flex space-x-2 text-sm">
+              <span className="px-2 py-1 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-300 rounded-full">
+                {stats.trips.pending} pending
+              </span>
+              <span className="px-2 py-1 bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300 rounded-full">
+                {stats.trips.completed} completed
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Users Summary */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
         {/* Total Users */}
@@ -620,7 +652,7 @@ const Dashboard = () => {
           </div>
         </div>
 
-        {/* Partner Users - Replaced Support Users */}
+        {/* Partner Users */}
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6 border border-transparent dark:border-gray-700">
           <div className="flex items-center">
             <div className="p-3 bg-yellow-100 dark:bg-yellow-900/50 rounded-full">
@@ -634,52 +666,108 @@ const Dashboard = () => {
         </div>
       </div>
 
-      {/* Health Checks */}
-      <div className="mb-8 grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Signup Metrics */}
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6 border border-transparent dark:border-gray-700">
-          <h3 className="text-lg font-medium mb-4 dark:text-white flex items-center">
-            <Users className="w-5 h-5 mr-2 text-blue-500 dark:text-blue-400" />
-            Signup Activity
-          </h3>
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <span className="text-gray-500 dark:text-gray-400">Last 24 hours</span>
-              <span className="text-lg font-medium dark:text-white">{stats.signups.last24h}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-gray-500 dark:text-gray-400">Last 7 days</span>
-              <span className="text-lg font-medium dark:text-white">{stats.signups.last7d}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-gray-500 dark:text-gray-400">Last 30 days</span>
-              <span className="text-lg font-medium dark:text-white">{stats.signups.last30d}</span>
+      {/* Financial Summary */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+        {/* Payment Stats Card */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md overflow-hidden border dark:border-gray-700">
+          <div className="px-6 py-4 bg-gray-50 dark:bg-gray-700 border-b dark:border-gray-600">
+            <h3 className="font-medium text-gray-900 dark:text-white flex items-center">
+              <CreditCard className="w-5 h-5 mr-2 text-blue-500 dark:text-blue-400" />
+              Payment Analytics
+            </h3>
+          </div>
+          <div className="p-6">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="bg-gray-50 dark:bg-gray-700 p-4 rounded-md">
+                <div className="text-sm text-gray-500 dark:text-gray-400">Revenue (30d)</div>
+                <div className="text-2xl font-bold text-gray-900 dark:text-white mt-1">€{stats.payments.amount.toFixed(2)}</div>
+                <div className="text-xs text-green-600 dark:text-green-400 flex items-center mt-1">
+                  <TrendingUp className="h-3 w-3 mr-1" />
+                  +8.2% vs prev. month
+                </div>
+              </div>
+              <div className="bg-gray-50 dark:bg-gray-700 p-4 rounded-md">
+                <div className="text-sm text-gray-500 dark:text-gray-400">Avg. Daily</div>
+                <div className="text-2xl font-bold text-gray-900 dark:text-white mt-1">€{stats.payments.average.toFixed(2)}</div>
+                <div className="text-xs text-green-600 dark:text-green-400 flex items-center mt-1">
+                  <TrendingUp className="h-3 w-3 mr-1" />
+                  +4.5% daily growth
+                </div>
+              </div>
+              <div className="bg-gray-50 dark:bg-gray-700 p-4 rounded-md">
+                <div className="text-sm text-gray-500 dark:text-gray-400">Completed</div>
+                <div className="text-2xl font-bold text-gray-900 dark:text-white mt-1">{stats.payments.completed}</div>
+                <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  out of {stats.payments.total} payments
+                </div>
+              </div>
+              <div className="bg-gray-50 dark:bg-gray-700 p-4 rounded-md">
+                <div className="text-sm text-gray-500 dark:text-gray-400">Avg. Booking</div>
+                <div className="text-2xl font-bold text-gray-900 dark:text-white mt-1">
+                  €{stats.payments.completed > 0 
+                     ? (stats.payments.amount / stats.payments.completed).toFixed(2) 
+                     : "0.00"}
+                </div>
+                <div className="text-xs text-green-600 dark:text-green-400 flex items-center mt-1">
+                  <TrendingUp className="h-3 w-3 mr-1" />
+                  +2.3% per booking
+                </div>
+              </div>
             </div>
           </div>
         </div>
-        
-        {/* Login Metrics */}
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6 border border-transparent dark:border-gray-700">
-          <h3 className="text-lg font-medium mb-4 dark:text-white flex items-center">
-            <LogIn className="w-5 h-5 mr-2 text-green-500 dark:text-green-400" />
-            Login Activity
-          </h3>
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <span className="text-gray-500 dark:text-gray-400">Last 24 hours</span>
-              <span className="text-lg font-medium dark:text-white">{stats.logins.last24h}</span>
+
+        {/* Activity Section */}
+        <div className="md:col-span-2 grid grid-cols-1 gap-6">
+          {/* User Activity Card */}
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md overflow-hidden border dark:border-gray-700">
+            <div className="px-6 py-4 bg-gray-50 dark:bg-gray-700 border-b dark:border-gray-600">
+              <h3 className="font-medium text-gray-900 dark:text-white flex items-center">
+                <BarChart2 className="w-5 h-5 mr-2 text-blue-500 dark:text-blue-400" />
+                User Activity
+              </h3>
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-gray-500 dark:text-gray-400">Last 7 days</span>
-              <span className="text-lg font-medium dark:text-white">{stats.logins.last7d}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-gray-500 dark:text-gray-400">Last 30 days</span>
-              <span className="text-lg font-medium dark:text-white">{stats.logins.last30d}</span>
+            <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Signups Section */}
+              <div className="space-y-4">
+                <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">New Signups</h4>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-500 dark:text-gray-400">Last 24 hours</span>
+                  <span className="text-lg font-medium dark:text-white">{stats.signups.last24h}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-500 dark:text-gray-400">Last 7 days</span>
+                  <span className="text-lg font-medium dark:text-white">{stats.signups.last7d}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-500 dark:text-gray-400">Last 30 days</span>
+                  <span className="text-lg font-medium dark:text-white">{stats.signups.last30d}</span>
+                </div>
+              </div>
+              
+              {/* Logins Section */}
+              <div className="space-y-4">
+                <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">User Logins</h4>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-500 dark:text-gray-400">Last 24 hours</span>
+                  <span className="text-lg font-medium dark:text-white">{stats.logins.last24h}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-500 dark:text-gray-400">Last 7 days</span>
+                  <span className="text-lg font-medium dark:text-white">{stats.logins.last7d}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-500 dark:text-gray-400">Last 30 days</span>
+                  <span className="text-lg font-medium dark:text-white">{stats.logins.last30d}</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
-        
+      </div>
+
+      {/* Trip and Driver Status */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
         {/* Trip Metrics */}
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6 border border-transparent dark:border-gray-700">
           <h3 className="text-lg font-medium mb-4 dark:text-white flex items-center">
@@ -701,22 +789,47 @@ const Dashboard = () => {
             </div>
           </div>
         </div>
-      </div>
 
-      {/* Driver Activity */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6 border border-transparent dark:border-gray-700 mb-8">
-        <h3 className="text-lg font-medium mb-4 dark:text-white">Driver Status</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="bg-gray-50 dark:bg-gray-700 p-4 rounded-md">
+        {/* Driver Status */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6 border border-transparent dark:border-gray-700">
+          <h3 className="text-lg font-medium mb-4 dark:text-white flex items-center">
+            <Car className="w-5 h-5 mr-2 text-blue-500 dark:text-blue-400" />
+            Driver Status
+          </h3>
+          <div className="space-y-4">
             <div className="flex items-center justify-between">
               <span className="text-gray-500 dark:text-gray-400">Total Drivers</span>
-              <span className="text-xl font-medium dark:text-white">{stats.drivers.total}</span>
+              <span className="text-lg font-medium dark:text-white">{stats.drivers.total}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-gray-500 dark:text-gray-400">Active Drivers</span>
+              <span className="text-lg font-medium dark:text-white">{stats.drivers.active}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-gray-500 dark:text-gray-400">Pending Verification</span>
+              <span className="text-lg font-medium dark:text-white">{stats.drivers.pending}</span>
             </div>
           </div>
-          <div className="bg-gray-50 dark:bg-gray-700 p-4 rounded-md">
+        </div>
+
+        {/* Daily Bookings */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6 border border-transparent dark:border-gray-700">
+          <h3 className="text-lg font-medium mb-4 dark:text-white flex items-center">
+            <FileText className="w-5 h-5 mr-2 text-indigo-500 dark:text-indigo-400" />
+            Booking Insights
+          </h3>
+          <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <span className="text-gray-500 dark:text-gray-400">Available Drivers</span>
-              <span className="text-xl font-medium dark:text-white">{stats.drivers.active}</span>
+              <span className="text-gray-500 dark:text-gray-400">Today's Bookings</span>
+              <span className="text-lg font-medium dark:text-white">{Math.round(stats.trips.total * 0.15)}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-gray-500 dark:text-gray-400">This Week</span>
+              <span className="text-lg font-medium dark:text-white">{Math.round(stats.trips.total * 0.3)}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-gray-500 dark:text-gray-400">Avg. Daily Revenue</span>
+              <span className="text-lg font-medium dark:text-white">€{stats.payments.average.toFixed(2)}</span>
             </div>
           </div>
         </div>

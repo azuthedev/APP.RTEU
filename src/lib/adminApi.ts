@@ -11,7 +11,7 @@ async function refreshSession() {
   }
 }
 
-const callEdgeFunction = async (functionName, payload) => {
+const callEdgeFunction = async (functionName, payload = {}, method = 'POST') => {
   try {
     // Explicitly refresh the session before every call to ensure token validity
     await refreshSession();
@@ -23,14 +23,25 @@ const callEdgeFunction = async (functionName, payload) => {
       throw new Error('No active session found. Please log in again.');
     }
     
-    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-    const response = await fetch(`${supabaseUrl}/functions/v1/${functionName}`, {
-      method: 'POST',
+    // For GET requests, format query parameters
+    let url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/${functionName}`;
+    if (method === 'GET' && Object.keys(payload).length > 0) {
+      const queryParams = new URLSearchParams();
+      Object.entries(payload).forEach(([key, value]) => {
+        if (value !== undefined && value !== null) {
+          queryParams.append(key, String(value));
+        }
+      });
+      url += `?${queryParams.toString()}`;
+    }
+    
+    const response = await fetch(url, {
+      method,
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${session.access_token}`
       },
-      body: JSON.stringify(payload)
+      body: method !== 'GET' ? JSON.stringify(payload) : undefined
     });
     
     // Check if response is ok
@@ -53,6 +64,11 @@ export const adminApi = {
     return callEdgeFunction('admin-fetch-drivers', {});
   },
   
+  // Fetch pending drivers
+  fetchPendingDrivers: async (status = 'pending') => {
+    return callEdgeFunction('admin-fetch-pending-drivers', { verification_status: status }, 'GET');
+  },
+  
   // Fetch driver documents
   fetchDriverDocuments: async (driverId) => {
     return callEdgeFunction('admin-fetch-documents', { driverId });
@@ -60,7 +76,42 @@ export const adminApi = {
   
   // Fetch driver activity logs
   fetchDriverLogs: async (driverId) => {
-    return callEdgeFunction('admin-fetch-logs', { driverId });
+    return callEdgeFunction('admin-fetch-logs', { driverId, type: 'driver' });
+  },
+  
+  // Fetch bookings
+  fetchBookings: async () => {
+    return callEdgeFunction('admin-fetch-bookings', {});
+  },
+  
+  // Fetch booking logs
+  fetchBookingLogs: async (bookingId) => {
+    return callEdgeFunction('admin-fetch-logs', { bookingId, type: 'booking' });
+  },
+  
+  // Update booking
+  updateBooking: async (bookingId, data) => {
+    return callEdgeFunction('admin-update-booking', { bookingId, data });
+  },
+  
+  // Assign driver to booking
+  assignDriverToBooking: async (bookingId, driverId) => {
+    return callEdgeFunction('admin-assign-driver', { bookingId, driverId });
+  },
+  
+  // Log booking activity
+  logBookingActivity: async (bookingId, action, details) => {
+    return callEdgeFunction('admin-log-activity', { bookingId, action, details });
+  },
+  
+  // Send booking reminder
+  sendBookingReminder: async (bookingId) => {
+    return callEdgeFunction('admin-send-reminder', { bookingId });
+  },
+  
+  // Duplicate booking
+  duplicateBooking: async (bookingId) => {
+    return callEdgeFunction('admin-duplicate-booking', { bookingId });
   },
   
   // Approve driver
@@ -84,6 +135,11 @@ export const adminApi = {
     });
   },
   
+  // Create driver profile
+  createDriverProfile: async (userId) => {
+    return callEdgeFunction('driver-permissions-fix', { userId });
+  },
+  
   // Fetch platform settings
   fetchSettings: async () => {
     return callEdgeFunction('admin-fetch-settings', {});
@@ -92,5 +148,23 @@ export const adminApi = {
   // Update platform settings
   updateSettings: async (settings) => {
     return callEdgeFunction('admin-update-settings', { settings });
+  },
+  
+  // Fetch payments
+  fetchPayments: async (sinceDate, status) => {
+    return callEdgeFunction('admin-fetch-payments', { 
+      since_date: sinceDate, 
+      status 
+    }, 'GET');
+  },
+  
+  // Fetch trip statistics
+  fetchTripStats: async () => {
+    return callEdgeFunction('admin-fetch-trip-stats', {});
+  },
+  
+  // Fetch driver statistics
+  fetchDriverStats: async () => {
+    return callEdgeFunction('admin-fetch-driver-stats', {});
   }
 };

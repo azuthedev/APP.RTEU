@@ -91,17 +91,6 @@ const AdminLayout = () => {
                 <ArrowLeft className="w-5 h-5 mr-2" />
                 Main site
               </a>
-              
-              {/* Partner Portal Button */}
-              {userData?.user_role === 'admin' && (
-                <Link
-                  to="/partner"
-                  className="flex items-center text-gray-600 hover:text-blue-600 dark:text-gray-300 dark:hover:text-blue-400 transition-colors"
-                >
-                  <Car className="w-5 h-5 mr-2" />
-                  View Partner Portal
-                </Link>
-              )}
             </div>
             <ThemeToggle />
           </div>

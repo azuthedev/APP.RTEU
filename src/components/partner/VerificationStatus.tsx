@@ -29,7 +29,7 @@ const VerificationStatus: React.FC<VerificationStatusProps> = ({ className = '' 
       
       // First check if the user has a driver record using RPC
       const { data: driverId, error: driverIdError } = await supabase
-        .rpc('get_user_driver_id', { p_user_id: userData?.id });
+        .rpc('get_user_driver_id');
       
       if (driverIdError || !driverId) {
         // No driver record found
@@ -69,7 +69,7 @@ const VerificationStatus: React.FC<VerificationStatusProps> = ({ className = '' 
     try {
       // Get driver ID using the RPC function
       const { data: driverId, error: driverIdError } = await supabase
-        .rpc('get_user_driver_id', { p_user_id: userData?.id });
+        .rpc('get_user_driver_id');
       
       if (driverIdError || !driverId) {
         setDocsUploaded(0);
@@ -78,17 +78,17 @@ const VerificationStatus: React.FC<VerificationStatusProps> = ({ className = '' 
       }
       
       // Count uploaded documents
-      const { count: uploadedCount, error: uploadedError } = await supabase
+      const { data, error: countError } = await supabase
         .from('driver_documents')
-        .select('*', { count: 'exact', head: true })
+        .select('id')
         .eq('driver_id', driverId);
         
-      if (uploadedError) {
-        console.error('Error counting uploaded documents:', uploadedError);
+      if (countError) {
+        console.error('Error counting uploaded documents:', countError);
         return;
       }
       
-      setDocsUploaded(uploadedCount || 0);
+      setDocsUploaded(data?.length || 0);
       setDocsRequired(3); // Required docs: License, Insurance, Registration
       
     } catch (error) {

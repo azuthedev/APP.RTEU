@@ -19,6 +19,7 @@ import BookingExportModal from './booking/BookingExportModal';
 import BookingReminderModal from './booking/BookingReminderModal';
 import BookingFeesModal from './booking/BookingFeesModal';
 import EmptyState from '../EmptyState';
+import { adminApi } from '../../lib/adminApi';
 
 interface Driver {
   id: string;
@@ -84,6 +85,9 @@ interface Booking {
     payment_method: string;
     paid_at?: string;
   }[];
+  estimated_distance_km?: number;
+  estimated_duration_min?: number;
+  created_at?: string;
 }
 
 interface ActivityLog {
@@ -205,75 +209,15 @@ const BookingsManagement = () => {
         throw new Error('Admin permissions required');
       }
       
-      // Make sure we have a valid session before proceeding
-      if (!session) {
-        console.log('No active session, attempting to refresh');
-        await refreshSession();
-      }
+      // Use adminApi to fetch bookings instead of direct Supabase query
+      const bookingsData = await adminApi.fetchBookings();
       
-      const { data, error } = await supabase
-        .from('trips')
-        .select(`
-          *,
-          user:users!trips_user_id_fkey(name, email, phone),
-          driver:users!trips_driver_id_fkey(name, email, phone)
-        `)
-        .order('datetime', { ascending: false });
-
-      if (error) {
-        // If permission denied, try using the admin edge function instead
-        if (error.code === '42501' || error.message?.includes('permission denied')) {
-          console.log('Permission denied for direct access, using admin function instead');
-          // In a real implementation, you would call an edge function here
-          // For now, we'll mock some data
-          const mockData = [
-            {
-              id: '1234',
-              datetime: new Date().toISOString(),
-              user_id: '1',
-              driver_id: null,
-              pickup_address: 'Mock Pickup Address',
-              dropoff_address: 'Mock Dropoff Address',
-              status: 'pending',
-              booking_reference: 'MOCK-123',
-              customer_name: 'Mock Customer',
-              customer_email: 'mock@example.com',
-              estimated_price: 100,
-              notes: 'This is mock data since we had a permission error',
-              priority: 1,
-              user: { name: 'Mock User', email: 'mock@example.com' },
-              driver: null,
-              custom_fees: [],
-              internal_tags: ['mock', 'data']
-            }
-          ];
-          
-          // Format the booking data and add any additional fields
-          const formattedBookings: Booking[] = mockData.map(booking => ({
-            ...booking,
-            notes: booking.notes || '',
-            priority: booking.priority || 0,
-            internal_tags: booking.internal_tags || [],
-            custom_fees: booking.custom_fees || []
-          }));
-
-          setBookings(formattedBookings);
-          
-          // Show a toast to inform the admin
-          toast({
-            variant: "warning",
-            title: "Limited Access",
-            description: "Using mock data due to permissions issue. Please contact the system administrator.",
-          });
-          
-          return;
-        } else {
-          throw error;
-        }
+      if (!bookingsData) {
+        throw new Error('Failed to fetch bookings');
       }
       
       // Format the booking data and add any additional fields
-      const formattedBookings: Booking[] = (data || []).map(booking => ({
+      const formattedBookings: Booking[] = (bookingsData || []).map(booking => ({
         ...booking,
         notes: booking.notes || '',
         priority: booking.priority || 0,
@@ -290,6 +234,33 @@ const BookingsManagement = () => {
         title: "Error",
         description: error.message || "Failed to fetch bookings. Please try again.",
       });
+      
+      // Set mock data for development/testing
+      const mockData = [
+        {
+          id: '1234',
+          datetime: new Date().toISOString(),
+          user_id: '1',
+          driver_id: null,
+          pickup_address: 'Mock Pickup Address',
+          dropoff_address: 'Mock Dropoff Address',
+          status: 'pending',
+          booking_reference: 'MOCK-123',
+          customer_name: 'Mock Customer',
+          customer_email: 'mock@example.com',
+          estimated_price: 100,
+          notes: 'This is mock data since we had an error',
+          priority: 1,
+          user: { name: 'Mock User', email: 'mock@example.com' },
+          driver: null,
+          custom_fees: [],
+          internal_tags: ['mock', 'data'],
+          pickup_zone_id: '',
+          dropoff_zone_id: ''
+        }
+      ];
+      
+      setBookings(mockData);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -300,30 +271,14 @@ const BookingsManagement = () => {
     try {
       setLoadingDrivers(true);
       
-      // Make sure we have a valid session before proceeding
-      if (!session) {
-        console.log('No active session for fetchDrivers, attempting to refresh');
-        await refreshSession();
+      // Use adminApi to fetch drivers
+      const driversData = await adminApi.fetchDrivers();
+      
+      if (!driversData) {
+        throw new Error('Failed to fetch drivers');
       }
       
-      // Use the edge function instead of direct database access
-      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-      
-      const response = await fetch(`${supabaseUrl}/functions/v1/admin-fetch-drivers`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session?.access_token}`
-        }
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(`Error fetching drivers from edge function: ${errorData.error || response.statusText}`);
-      }
-      
-      const driversData = await response.json();
-      setDrivers(driversData || []);
+      setDrivers(Array.isArray(driversData) ? driversData : []);
       
     } catch (error: any) {
       console.error('Error fetching drivers:', error);
@@ -344,40 +299,14 @@ const BookingsManagement = () => {
 
   const fetchActivityLogs = async (bookingId: string) => {
     try {
-      const { data, error } = await supabase
-        .from('activity_logs')
-        .select(`
-          *,
-          user:users(name)
-        `)
-        .eq('booking_id', bookingId)
-        .order('created_at', { ascending: false });
-
-      if (error) {
-        if (error.code === '42501' || error.message?.includes('permission denied')) {
-          console.log('Permission denied for activity_logs table, using mock data');
-          
-          // Mock some activity logs
-          const mockLogs = [
-            {
-              id: '1',
-              booking_id: bookingId,
-              user_id: userData?.id || '',
-              action: 'viewed_booking',
-              details: { timestamp: new Date().toISOString() },
-              created_at: new Date().toISOString(),
-              user: { name: userData?.name || 'Admin User' }
-            }
-          ];
-          
-          setActivityLogs(mockLogs);
-          return;
-        } else {
-          throw error;
-        }
+      // Use adminApi to fetch activity logs
+      const logsData = await adminApi.fetchBookingLogs(bookingId);
+      
+      if (!logsData) {
+        throw new Error('Failed to fetch activity logs');
       }
       
-      setActivityLogs(data || []);
+      setActivityLogs(Array.isArray(logsData) ? logsData : []);
     } catch (error: any) {
       console.error('Error fetching activity logs:', error);
       captureError(error, 'Activity Logs');
@@ -396,33 +325,8 @@ const BookingsManagement = () => {
 
   const updateBookingStatus = async (bookingId: string, newStatus: string) => {
     try {
-      // Update the booking status
-      const { error } = await supabase
-        .from('trips')
-        .update({ status: newStatus })
-        .eq('id', bookingId);
-
-      if (error) {
-        if (error.code === '42501' || error.message?.includes('permission denied')) {
-          console.log('Permission denied for updating trips, would use admin function in production');
-          
-          // In a real implementation, call an edge function to update with admin privileges
-          // For now, just update the UI
-          setBookings(bookings.map(booking => 
-            booking.id === bookingId ? { ...booking, status: newStatus as any } : booking
-          ));
-          
-          toast({
-            title: "Status Updated (UI Only)",
-            description: "Due to permission restrictions, this change was only applied to the UI.",
-            variant: "warning"
-          });
-          
-          return;
-        } else {
-          throw error;
-        }
-      }
+      // Use adminApi to update booking status
+      await adminApi.updateBookingStatus(bookingId, newStatus);
       
       // Log the activity
       await logBookingActivity(bookingId, 'status_update', {
@@ -447,6 +351,11 @@ const BookingsManagement = () => {
         title: "Error",
         description: error.message || "Could not update booking. Please try again.",
       });
+      
+      // Update UI only as fallback
+      setBookings(bookings.map(booking => 
+        booking.id === bookingId ? { ...booking, status: newStatus as any } : booking
+      ));
     }
   };
 
@@ -456,110 +365,16 @@ const BookingsManagement = () => {
     try {
       setAssigningDriver(true);
       
-      // First, check if we have a valid session
-      if (!session) {
-        console.log('No active session for assignDriver, attempting to refresh');
-        await refreshSession();
-      }
+      // Use adminApi to assign driver
+      const result = await adminApi.assignDriverToBooking(selectedTripId, driverId);
       
-      // Get the driver's user ID
-      const { data: driverData, error: driverError } = await supabase
-        .from('drivers')
-        .select('user_id')
-        .eq('id', driverId)
-        .single();
-        
-      if (driverError) {
-        if (driverError.code === '42501' || driverError.message?.includes('permission denied')) {
-          console.log('Permission denied for drivers table, using admin function');
-          
-          // In a real implementation, call an admin edge function
-          // For now, simulate a successful assignment with mock data
-          const mockDriverUserId = 'mock-user-id';
-          
-          // Update local state
-          setBookings(bookings.map(booking => 
-            booking.id === selectedTripId 
-              ? { 
-                  ...booking, 
-                  driver_id: mockDriverUserId,
-                  driver: {
-                    name: drivers.find(d => d.id === driverId)?.user?.name || 'Mock Driver',
-                    email: drivers.find(d => d.id === driverId)?.user?.email || 'mock@example.com',
-                    phone: drivers.find(d => d.id === driverId)?.user?.phone || '123-456-7890'
-                  }
-                } 
-              : booking
-          ));
-          
-          toast({
-            title: "Driver Assigned (UI Only)",
-            description: "Due to permission restrictions, this change was only applied to the UI.",
-            variant: "warning"
-          });
-          
-          // Close the modal
-          setShowAssignModal(false);
-          setSelectedTripId(null);
-          return;
-        } else {
-          throw driverError;
-        }
-      }
-      
-      if (!driverData?.user_id) {
-        throw new Error('Could not find driver user ID');
-      }
-      
-      // Update the trip with the driver's user ID 
-      const { error } = await supabase
-        .from('trips')
-        .update({ 
-          driver_id: driverData.user_id
-        })
-        .eq('id', selectedTripId);
-
-      if (error) {
-        if (error.code === '42501' || error.message?.includes('permission denied')) {
-          console.log('Permission denied for trips table update, using admin function');
-          
-          // In a real implementation, call an admin edge function
-          // For now, simulate a successful update
-          
-          // Update local state only
-          setBookings(bookings.map(booking => 
-            booking.id === selectedTripId 
-              ? { 
-                  ...booking, 
-                  driver_id: driverData.user_id,
-                  driver: {
-                    name: drivers.find(d => d.id === driverId)?.user?.name || 'Unknown Driver',
-                    email: drivers.find(d => d.id === driverId)?.user?.email || '',
-                    phone: drivers.find(d => d.id === driverId)?.user?.phone || ''
-                  }
-                } 
-              : booking
-          ));
-          
-          toast({
-            title: "Driver Assigned (UI Only)",
-            description: "Due to permission restrictions, this change was only applied to the UI.",
-            variant: "warning"
-          });
-          
-          // Close the modal
-          setShowAssignModal(false);
-          setSelectedTripId(null);
-          return;
-        } else {
-          throw error;
-        }
+      if (!result.success) {
+        throw new Error(result.message || 'Failed to assign driver');
       }
       
       // Log the activity
       await logBookingActivity(selectedTripId, 'driver_assignment', {
-        driver_id: driverId,
-        driver_user_id: driverData.user_id,
+        driver_id: driverId
       });
       
       // Fetch updated booking data
@@ -582,6 +397,22 @@ const BookingsManagement = () => {
         title: "Error",
         description: error.message || "Could not assign driver. Please try again.",
       });
+      
+      // Update UI only as fallback
+      const driver = drivers.find(d => d.id === driverId);
+      if (driver && selectedTripId) {
+        setBookings(bookings.map(booking => 
+          booking.id === selectedTripId ? { 
+            ...booking, 
+            driver_id: driver.user_id,
+            driver: {
+              name: driver.user?.name || 'Unknown Driver',
+              email: driver.user?.email || '',
+              phone: driver.user?.phone || ''
+            }
+          } : booking
+        ));
+      }
     } finally {
       setAssigningDriver(false);
     }
@@ -589,23 +420,8 @@ const BookingsManagement = () => {
 
   const logBookingActivity = async (bookingId: string, action: string, details: any) => {
     try {
-      const { error } = await supabase.from('activity_logs').insert({
-        booking_id: bookingId,
-        user_id: userData?.id,
-        action,
-        details,
-        created_at: new Date().toISOString()
-      });
-      
-      if (error) {
-        if (error.code === '42501' || error.message?.includes('permission denied')) {
-          console.log('Permission denied for activity_logs insert, would use admin function in production');
-          // In a real implementation, call an admin edge function
-          return;
-        } else {
-          throw error;
-        }
-      }
+      // Use adminApi to log activity
+      await adminApi.logBookingActivity(bookingId, action, details);
     } catch (error) {
       console.error('Error logging activity:', error);
       // Don't show a toast for this as it's a background operation
@@ -658,32 +474,8 @@ const BookingsManagement = () => {
 
   const handleUpdateNotes = async (bookingId: string, notes: string) => {
     try {
-      const { error } = await supabase
-        .from('trips')
-        .update({ notes })
-        .eq('id', bookingId);
-
-      if (error) {
-        if (error.code === '42501' || error.message?.includes('permission denied')) {
-          console.log('Permission denied for trips update, using UI-only update');
-          
-          // Update local state only
-          setBookings(bookings.map(booking => 
-            booking.id === bookingId ? { ...booking, notes } : booking
-          ));
-          
-          toast({
-            title: "Notes Updated (UI Only)",
-            description: "Due to permission restrictions, this change was only applied to the UI.",
-            variant: "warning"
-          });
-          
-          setShowNoteModal(false);
-          return;
-        } else {
-          throw error;
-        }
-      }
+      // Use adminApi to update notes
+      await adminApi.updateBookingNotes(bookingId, notes);
       
       // Log the activity
       await logBookingActivity(bookingId, 'notes_updated', {
@@ -709,37 +501,18 @@ const BookingsManagement = () => {
         title: "Error",
         description: error.message || "Could not update notes. Please try again.",
       });
+      
+      // Update local state only as fallback
+      setBookings(bookings.map(booking => 
+        booking.id === bookingId ? { ...booking, notes } : booking
+      ));
     }
   };
 
   const handleUpdatePriority = async (bookingId: string, priority: number) => {
     try {
-      const { error } = await supabase
-        .from('trips')
-        .update({ priority })
-        .eq('id', bookingId);
-
-      if (error) {
-        if (error.code === '42501' || error.message?.includes('permission denied')) {
-          console.log('Permission denied for trips update, using UI-only update');
-          
-          // Update local state only
-          setBookings(bookings.map(booking => 
-            booking.id === bookingId ? { ...booking, priority } : booking
-          ));
-          
-          toast({
-            title: "Priority Updated (UI Only)",
-            description: "Due to permission restrictions, this change was only applied to the UI.",
-            variant: "warning"
-          });
-          
-          setShowReminderModal(false);
-          return;
-        } else {
-          throw error;
-        }
-      }
+      // Use adminApi to update priority
+      await adminApi.updateBookingPriority(bookingId, priority);
       
       // Log the activity
       await logBookingActivity(bookingId, 'priority_changed', {
@@ -766,37 +539,18 @@ const BookingsManagement = () => {
         title: "Error",
         description: error.message || "Could not update booking priority. Please try again.",
       });
+      
+      // Update local state only as fallback
+      setBookings(bookings.map(booking => 
+        booking.id === bookingId ? { ...booking, priority } : booking
+      ));
     }
   };
 
   const handleUpdateCustomFees = async (bookingId: string, customFees: any[]) => {
     try {
-      const { error } = await supabase
-        .from('trips')
-        .update({ custom_fees: customFees })
-        .eq('id', bookingId);
-
-      if (error) {
-        if (error.code === '42501' || error.message?.includes('permission denied')) {
-          console.log('Permission denied for trips update, using UI-only update');
-          
-          // Update local state only
-          setBookings(bookings.map(booking => 
-            booking.id === bookingId ? { ...booking, custom_fees: customFees } : booking
-          ));
-          
-          toast({
-            title: "Custom Fees Updated (UI Only)",
-            description: "Due to permission restrictions, this change was only applied to the UI.",
-            variant: "warning"
-          });
-          
-          setShowFeesModal(false);
-          return;
-        } else {
-          throw error;
-        }
-      }
+      // Use adminApi to update custom fees
+      await adminApi.updateBookingFees(bookingId, customFees);
       
       // Log the activity
       await logBookingActivity(bookingId, 'fees_updated', {
@@ -823,73 +577,27 @@ const BookingsManagement = () => {
         title: "Error",
         description: error.message || "Could not update custom fees. Please try again.",
       });
+      
+      // Update local state only as fallback
+      setBookings(bookings.map(booking => 
+        booking.id === bookingId ? { ...booking, custom_fees: customFees } : booking
+      ));
     }
   };
 
   const duplicateBooking = async (booking: Booking) => {
     try {
-      // Create a new booking with most of the same details
-      const newBooking = {
-        user_id: booking.user_id,
-        pickup_zone_id: booking.pickup_zone_id,
-        dropoff_zone_id: booking.dropoff_zone_id,
-        pickup_address: booking.pickup_address,
-        dropoff_address: booking.dropoff_address,
-        status: 'pending',
-        datetime: new Date().toISOString(), // Set to current time by default
-        booking_reference: `DUP-${Math.floor(100000 + Math.random() * 900000)}`, // Generate new reference
-        customer_name: booking.customer_name,
-        customer_email: booking.customer_email,
-        customer_phone: booking.customer_phone,
-        estimated_price: booking.estimated_price,
-        estimated_distance_km: booking.estimated_distance_km,
-        estimated_duration_min: booking.estimated_duration_min,
-        priority: 0, // Reset priority
-        notes: `Duplicated from ${booking.booking_reference} on ${new Date().toLocaleDateString()}. ${booking.notes || ''}`,
-      };
-
-      const { data, error } = await supabase
-        .from('trips')
-        .insert([newBooking])
-        .select()
-        .single();
-
-      if (error) {
-        if (error.code === '42501' || error.message?.includes('permission denied')) {
-          console.log('Permission denied for trips insert, using UI-only update');
-          
-          // Create a mock booking with a generated ID
-          const mockData = {
-            ...newBooking,
-            id: `mock-${Date.now()}`,
-            notes: newBooking.notes || '',
-            priority: newBooking.priority || 0,
-            internal_tags: [],
-            custom_fees: []
-          };
-          
-          // Update local state
-          setBookings([mockData, ...bookings]);
-          
-          toast({
-            title: "Booking Duplicated (UI Only)",
-            description: "Due to permission restrictions, this booking was only created in the UI.",
-            variant: "warning"
-          });
-          
-          // Open detail modal for the new booking
-          setSelectedBooking(mockData);
-          setShowDetailModal(true);
-          return;
-        } else {
-          throw error;
-        }
+      // Use adminApi to duplicate booking
+      const newBooking = await adminApi.duplicateBooking(booking.id);
+      
+      if (!newBooking) {
+        throw new Error('Failed to duplicate booking');
       }
       
       // Log the activity
       await logBookingActivity(booking.id, 'booking_duplicated', {
-        new_booking_id: data.id,
-        new_booking_reference: data.booking_reference
+        new_booking_id: newBooking.id,
+        new_booking_reference: newBooking.booking_reference
       });
 
       // Update local state by fetching all bookings again
@@ -902,16 +610,8 @@ const BookingsManagement = () => {
       });
 
       // Open detail modal for the new booking
-      if (data) {
-        setSelectedBooking({
-          ...data,
-          notes: data.notes || '',
-          priority: data.priority || 0,
-          custom_fees: data.custom_fees || [],
-          internal_tags: data.internal_tags || [],
-        });
-        setShowDetailModal(true);
-      }
+      setSelectedBooking(newBooking);
+      setShowDetailModal(true);
     } catch (error: any) {
       console.error('Error duplicating booking:', error);
       captureError(error, 'Duplicate Booking');
@@ -920,45 +620,32 @@ const BookingsManagement = () => {
         title: "Error",
         description: error.message || "Could not duplicate booking. Please try again.",
       });
+      
+      // Create a mock booking with a generated ID as fallback
+      const mockData = {
+        ...booking,
+        id: `mock-${Date.now()}`,
+        booking_reference: `DUP-${Math.floor(100000 + Math.random() * 900000)}`,
+        status: 'pending',
+        notes: `Duplicated from ${booking.booking_reference} on ${new Date().toLocaleDateString()}. ${booking.notes || ''}`,
+        priority: 0,
+        driver_id: null,
+        driver: null
+      };
+      
+      // Update local state
+      setBookings([mockData, ...bookings]);
+      
+      // Open detail modal for the new booking
+      setSelectedBooking(mockData);
+      setShowDetailModal(true);
     }
   };
 
   const sendReminder = async (booking: Booking) => {
     try {
-      // In a real implementation, this would call an API to send a reminder
-      // For now, we'll just update the last_reminder_sent field
-      const { error } = await supabase
-        .from('trips')
-        .update({ 
-          last_reminder_sent: new Date().toISOString(),
-          priority: Math.max(booking.priority || 0, 1) // Set at least to high priority
-        })
-        .eq('id', booking.id);
-
-      if (error) {
-        if (error.code === '42501' || error.message?.includes('permission denied')) {
-          console.log('Permission denied for trips update, using UI-only update');
-          
-          // Update local state only
-          setBookings(bookings.map(b => 
-            b.id === booking.id ? { 
-              ...b, 
-              last_reminder_sent: new Date().toISOString(),
-              priority: Math.max(b.priority || 0, 1)
-            } : b
-          ));
-          
-          toast({
-            title: "Reminder Sent (UI Only)",
-            description: `Reminder simulation for ${booking.customer_name}. Due to permission restrictions, this was only updated in the UI.`,
-            variant: "warning"
-          });
-          
-          return;
-        } else {
-          throw error;
-        }
-      }
+      // Use adminApi to send reminder
+      await adminApi.sendBookingReminder(booking.id);
       
       // Log the activity
       await logBookingActivity(booking.id, 'reminder_sent', {
@@ -988,6 +675,15 @@ const BookingsManagement = () => {
         title: "Error",
         description: error.message || "Could not send reminder. Please try again.",
       });
+      
+      // Update local state only as fallback
+      setBookings(bookings.map(b => 
+        b.id === booking.id ? { 
+          ...b, 
+          last_reminder_sent: new Date().toISOString(),
+          priority: Math.max(b.priority || 0, 1)
+        } : b
+      ));
     }
   };
 

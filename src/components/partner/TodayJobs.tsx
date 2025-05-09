@@ -16,7 +16,8 @@ import {
   User, 
   MessageSquare, 
   AlertTriangle,
-  FileSearch
+  FileSearch,
+  CheckCircle
 } from 'lucide-react';
 import IncidentReportForm from './IncidentReportForm';
 
@@ -25,8 +26,6 @@ interface Trip {
   datetime: string;
   user_id: string;
   driver_id: string;
-  pickup_zone_id: string;
-  dropoff_zone_id: string;
   status: 'pending' | 'accepted' | 'in_progress' | 'completed' | 'cancelled';
   is_scheduled: boolean;
   scheduled_for: string | null;
@@ -39,12 +38,6 @@ interface Trip {
     name: string;
     email: string;
     phone: string;
-  };
-  pickup_zone?: {
-    name: string;
-  };
-  dropoff_zone?: {
-    name: string;
   };
   driver_acknowledged: boolean;
 }
@@ -177,9 +170,7 @@ const TodayJobs = () => {
         .from('trips')
         .select(`
           *,
-          user:users!trips_user_id_fkey(name, email, phone),
-          pickup_zone:zones!trips_pickup_zone_id_fkey(name),
-          dropoff_zone:zones!trips_dropoff_zone_id_fkey(name)
+          user:users!trips_user_id_fkey(name, email, phone)
         `)
         .eq('driver_id', userData?.id) // Use user ID directly since trips are assigned to users
         .or(`status.eq.pending,status.eq.accepted,status.eq.in_progress,status.eq.completed,status.eq.cancelled`)
@@ -550,25 +541,20 @@ const TodayJobs = () => {
                             <div className="w-6 h-6 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center">
                               <span className="w-2 h-2 rounded-full bg-green-600 dark:bg-green-400"></span>
                             </div>
-                            {trip.pickup_zone && trip.dropoff_zone && (
+                            {trip.pickup_address && trip.dropoff_address && (
                               <div className="w-0.5 h-10 bg-gray-200 dark:bg-gray-700 my-1"></div>
                             )}
                           </div>
                           <div>
                             <p className="text-xs text-gray-500 dark:text-gray-400">Pickup</p>
                             <p className="text-sm font-medium text-gray-900 dark:text-white">
-                              {trip.pickup_zone?.name || 'Unknown location'}
+                              {trip.pickup_address || 'Unknown location'}
                             </p>
-                            {trip.pickup_address && (
-                              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 max-w-xs">
-                                {trip.pickup_address}
-                              </p>
-                            )}
                           </div>
                         </div>
 
                         {/* Dropoff location */}
-                        {(trip.dropoff_zone || trip.dropoff_address) && (
+                        {trip.dropoff_address && (
                           <div className="flex items-start">
                             <div className="mr-3 flex flex-col items-center">
                               <div className="w-6 h-6 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center">
@@ -578,13 +564,8 @@ const TodayJobs = () => {
                             <div>
                               <p className="text-xs text-gray-500 dark:text-gray-400">Drop-off</p>
                               <p className="text-sm font-medium text-gray-900 dark:text-white">
-                                {trip.dropoff_zone?.name || 'Unknown location'}
+                                {trip.dropoff_address}
                               </p>
-                              {trip.dropoff_address && (
-                                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 max-w-xs">
-                                  {trip.dropoff_address}
-                                </p>
-                              )}
                             </div>
                           </div>
                         )}
@@ -667,16 +648,18 @@ const TodayJobs = () => {
                         )}
                       </div>
 
-                      <a
-                        href={`https://maps.google.com/maps?q=${encodeURIComponent(trip.pickup_zone?.name || '')}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 text-sm flex items-center"
-                      >
-                        <span className="material-icons-outlined" style={{fontSize: "16px", marginRight: "4px"}}>map</span>
-                        Directions
-                        <span className="material-icons-outlined" style={{fontSize: "14px", marginLeft: "4px"}}>north_east</span>
-                      </a>
+                      {trip.pickup_address && (
+                        <a
+                          href={`https://maps.google.com/maps?q=${encodeURIComponent(trip.pickup_address || '')}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 text-sm flex items-center"
+                        >
+                          <span className="material-icons-outlined" style={{fontSize: "16px", marginRight: "4px"}}>map</span>
+                          Directions
+                          <span className="material-icons-outlined" style={{fontSize: "14px", marginLeft: "4px"}}>north_east</span>
+                        </a>
+                      )}
                     </div>
                   </div>
                 ))}
