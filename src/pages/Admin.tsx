@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
 import { useNavigate, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { Users, Calendar, BarChart2, Settings, Database, AlertTriangle, ArrowLeft, Menu, Bug, LayoutDashboard, Car } from 'lucide-react';
+import { Users, Calendar, BarChart2, Settings, Database, AlertTriangle, ArrowLeft, Menu, Bug, LayoutDashboard, Car, CreditCard } from 'lucide-react';
 import Header from '../components/Header';
 import UserManagement from '../components/admin/UserManagement';
 import BookingsManagement from '../components/admin/BookingsManagement';
@@ -10,6 +10,7 @@ import DebugPanel from '../components/admin/DebugPanel';
 import ThemeToggle from '../components/ThemeToggle';
 import AdminDeveloperTools from '../components/admin/AdminDeveloperTools';
 import DriverVerification from '../components/admin/DriverVerification';
+import PricingManagement from '../components/admin/PricingManagement';
 import { useAuth } from '../contexts/AuthContext';
 import { Toaster } from '../components/ui/toaster';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -43,6 +44,7 @@ const AdminLayout = () => {
     { id: 'users', label: 'User Management', icon: Users, path: '/admin/users', allowedRoles: ['admin'] },
     { id: 'bookings', label: 'Bookings', icon: Calendar, path: '/admin/bookings', allowedRoles: ['admin', 'support', 'partner'] },
     { id: 'drivers', label: 'Driver Verification', icon: Car, path: '/admin/drivers', allowedRoles: ['admin'] },
+    { id: 'pricing', label: 'Pricing', icon: CreditCard, path: '/admin/pricing', allowedRoles: ['admin'] },
     { id: 'settings', label: 'Settings', icon: Settings, path: '/admin/settings', allowedRoles: ['admin'] },
     { id: 'admin-tools', label: 'Developer Tools', icon: Database, path: '/admin/admin-tools', allowedRoles: ['admin'] },
     { id: 'debug', label: 'Debug JWT', icon: Bug, path: '/admin/debug', allowedRoles: ['admin'] }
@@ -148,6 +150,7 @@ const AdminLayout = () => {
                 <Route path="users" element={<UserManagement />} />
                 <Route path="bookings" element={<BookingsManagement />} />
                 <Route path="drivers" element={<DriverVerification />} />
+                <Route path="pricing" element={<PricingManagement />} />
                 <Route path="settings" element={<PlatformSettings />} />
                 <Route path="admin-tools" element={<AdminDeveloperTools />} />
                 <Route path="debug" element={<DebugPanel />} />
