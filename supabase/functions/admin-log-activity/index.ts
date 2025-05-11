@@ -20,8 +20,20 @@ serve(async (req) => {
   }
 
   try {
-    // Create a Supabase client with the service role key
-    const supabaseClient = createClient(
+    // Create a Supabase client for auth verification
+    const supabaseAuth = createClient(
+      Deno.env.get("SUPABASE_URL") ?? "",
+      Deno.env.get("SUPABASE_ANON_KEY") ?? "",
+      {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false,
+        },
+      }
+    );
+
+    // Create a Supabase admin client with service role for database operations
+    const supabaseAdmin = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
       {
@@ -45,7 +57,7 @@ serve(async (req) => {
     }
 
     const token = authHeader.replace("Bearer ", "");
-    const { data: userData, error: userError } = await supabaseClient.auth.getUser(token);
+    const { data: userData, error: userError } = await supabaseAuth.auth.getUser(token);
 
     if (userError || !userData.user) {
       return new Response(
@@ -58,7 +70,7 @@ serve(async (req) => {
     }
 
     // Get the user's role to verify they are an admin
-    const { data: userRoleData, error: userRoleError } = await supabaseClient
+    const { data: userRoleData, error: userRoleError } = await supabaseAuth
       .from("users")
       .select("user_role")
       .eq("id", userData.user.id)
@@ -91,8 +103,8 @@ serve(async (req) => {
 
     // Log to the appropriate table based on what's being logged
     if (bookingId) {
-      // Log booking activity
-      const { data, error } = await supabaseClient
+      // Log booking activity using admin client to bypass RLS
+      const { data, error } = await supabaseAdmin
         .from("booking_activity_logs")
         .insert({
           booking_id: bookingId,
@@ -108,8 +120,8 @@ serve(async (req) => {
       result = data;
     } 
     else if (driverId) {
-      // Log driver activity
-      const { data, error } = await supabaseClient
+      // Log driver activity using admin client to bypass RLS
+      const { data, error } = await supabaseAdmin
         .from("activity_logs")
         .insert({
           driver_id: driverId,

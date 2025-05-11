@@ -26,11 +26,12 @@ const timeRangeToMs = {
 
 // Create Supabase admin client with service role
 const supabaseAdmin = createClient(
-  Deno.env.get("SUPABASE_URL") || "",
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "",
+  Deno.env.get("SUPABASE_URL") ?? "",
+  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
   {
     auth: {
       persistSession: false,
+      autoRefreshToken: false,
     }
   }
 );
@@ -45,7 +46,12 @@ async function tableExists(tableName: string): Promise<boolean> {
       .eq('table_name', tableName)
       .single();
     
-    return !error && !!data;
+    if (error) {
+      console.error(`Error checking table ${tableName}:`, error);
+      return false;
+    }
+    
+    return !!data;
   } catch (e) {
     console.error(`Error checking if table ${tableName} exists:`, e);
     return false;
@@ -53,7 +59,7 @@ async function tableExists(tableName: string): Promise<boolean> {
 }
 
 Deno.serve(async (req) => {
-  // Handle CORS
+  // Handle CORS preflight
   if (req.method === "OPTIONS") {
     return new Response(null, {
       status: 204,
@@ -65,13 +71,7 @@ Deno.serve(async (req) => {
     // Extract authorization header
     const authHeader = req.headers.get("Authorization");
     if (!authHeader) {
-      return new Response(
-        JSON.stringify({ error: "Authorization header is required" }),
-        {
-          status: 401,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      );
+      throw new Error("Authorization header is required");
     }
 
     // Verify JWT and check admin role
@@ -79,13 +79,7 @@ Deno.serve(async (req) => {
     const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
     
     if (authError || !user) {
-      return new Response(
-        JSON.stringify({ error: "Invalid or expired token" }),
-        {
-          status: 401,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      );
+      throw new Error("Invalid or expired token");
     }
 
     // Check if the user is an admin
@@ -96,43 +90,31 @@ Deno.serve(async (req) => {
       .single();
       
     if (userError || userData?.user_role !== "admin") {
-      return new Response(
-        JSON.stringify({ error: "Admin permissions required" }),
-        {
-          status: 403,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      );
+      throw new Error("Admin permissions required");
     }
 
     // Parse request body
-    let requestData;
+    let requestData: FetchLogsRequest;
     try {
       requestData = await req.json();
     } catch (e) {
-      // If request body parsing fails, try to get parameters from URL query
       const url = new URL(req.url);
       requestData = {
         source: url.searchParams.get('source') || 'all',
-        timeRange: url.searchParams.get('timeRange') || '1h',
+        timeRange: (url.searchParams.get('timeRange') || '1h') as '1h',
         limit: parseInt(url.searchParams.get('limit') || '100', 10)
       };
     }
     
-    const { source = 'all', timeRange = '1h', limit = 100 }: FetchLogsRequest = requestData;
+    const { source = 'all', timeRange = '1h', limit = 100 } = requestData;
 
     // Calculate time range for log retrieval
-    const startTime = new Date(Date.now() - timeRangeToMs[timeRange as keyof typeof timeRangeToMs]).toISOString();
-    
-    // Fetch logs from Supabase tables if they exist
-    let logs = [];
-    let totalCount = 0;
+    const startTime = new Date(Date.now() - timeRangeToMs[timeRange]).toISOString();
     
     // Function to query logs from a table safely
     async function queryLogsFromTable(tableName: string, timeColumn = 'created_at', serviceColumn?: string, sourceValue?: string) {
-      // First check if the table exists to avoid database errors
-      const tableExistsResult = await tableExists(tableName);
-      if (!tableExistsResult) {
+      const exists = await tableExists(tableName);
+      if (!exists) {
         console.log(`Table ${tableName} does not exist, skipping`);
         return { data: [], count: 0 };
       }
@@ -155,113 +137,94 @@ Deno.serve(async (req) => {
           return { data: [], count: 0 };
         }
         
-        return { data: data || [], count: count || 0 };
+        return { 
+          data: data || [], 
+          count: count || 0 
+        };
       } catch (e) {
         console.error(`Error querying ${tableName}:`, e);
         return { data: [], count: 0 };
       }
     }
 
-    // Query appropriate tables based on source
+    // Query logs based on source
+    let logs = [];
+    let totalCount = 0;
+
+    // Only generate sample logs if tables don't exist
     if (source === 'all') {
-      // For 'all' source, always generate sample logs instead of trying to query non-existent tables
-      logs = generateSampleLogs(limit);
-      totalCount = logs.length;
-    } 
-    // Check if log_queries table exists and only query it if it does
-    else if (source === 'log_queries' || source === 'auth') {
-      const logQueriesExists = await tableExists('log_queries');
-      if (logQueriesExists) {
-        const { data: logQueries, count: logQueryCount } = await queryLogsFromTable('log_queries');
-        logs = logQueries;
-        totalCount = logQueryCount;
+      const hasLogQueries = await tableExists('log_queries');
+      const hasZendeskTickets = await tableExists('zendesk_tickets');
+      
+      if (!hasLogQueries && !hasZendeskTickets) {
+        logs = generateSampleLogs(limit);
+        totalCount = logs.length;
       } else {
-        // Generate sample logs if the table doesn't exist
+        // Query from existing tables
+        const queries = [];
+        
+        if (hasLogQueries) {
+          queries.push(queryLogsFromTable('log_queries'));
+        }
+        if (hasZendeskTickets) {
+          queries.push(queryLogsFromTable('zendesk_tickets'));
+        }
+        
+        const results = await Promise.all(queries);
+        logs = results.flatMap(r => r.data);
+        totalCount = results.reduce((sum, r) => sum + r.count, 0);
+      }
+    } else {
+      const tableMap: Record<string, string> = {
+        'auth': 'log_queries',
+        'support': 'zendesk_tickets',
+        'trips': 'trips',
+        'payments': 'payments'
+      };
+      
+      const tableName = tableMap[source];
+      if (tableName) {
+        const { data, count } = await queryLogsFromTable(tableName);
+        logs = data;
+        totalCount = count;
+      }
+      
+      // Only generate sample logs if no real logs were found
+      if (logs.length === 0) {
         logs = generateSampleLogs(limit, source);
         totalCount = logs.length;
       }
-    } 
-    // Use zendesk_tickets table when source is 'support' 
-    else if (source === 'support' || source === 'zendesk') {
-      const zenDeskExists = await tableExists('zendesk_tickets');
-      if (zenDeskExists) {
-        const { data: ticketLogs, count: ticketCount } = await queryLogsFromTable('zendesk_tickets');
-        logs = ticketLogs;
-        totalCount = ticketCount;
-      } else {
-        logs = generateSampleLogs(limit, 'support');
-        totalCount = logs.length;
-      }
-    }
-    // Use trips table when source is 'trips'
-    else if (source === 'trips') {
-      const tripsExists = await tableExists('trips');
-      if (tripsExists) {
-        const { data: tripLogs, count: tripCount } = await queryLogsFromTable('trips', 'created_at');
-        logs = tripLogs;
-        totalCount = tripCount;
-      } else {
-        logs = generateSampleLogs(limit, 'trips');
-        totalCount = logs.length;
-      }
-    }
-    // Use payments table when source is 'payments'
-    else if (source === 'payments') {
-      const paymentsExists = await tableExists('payments');
-      if (paymentsExists) {
-        const { data: paymentLogs, count: paymentCount } = await queryLogsFromTable('payments', 'created_at');
-        logs = paymentLogs;
-        totalCount = paymentCount;
-      } else {
-        logs = generateSampleLogs(limit, 'payments');
-        totalCount = logs.length;
-      }
-    }
-    // For all other sources, generate sample logs
-    else {
-      logs = generateSampleLogs(limit, source);
-      totalCount = logs.length;
     }
 
-    // Format logs to ensure they have consistent keys for the frontend
-    const formattedLogs = logs.map(log => {
-      // Extract timestamp consistently
-      const timestamp = log.timestamp || log.created_at || new Date().toISOString();
-      
-      // Extract service info
-      const service = log.service || source;
-      
-      // Extract level info with sensible default
-      const level = log.level || (log.status === 'error' ? 'error' : 
-                                 log.status === 'warn' ? 'warn' : 'info');
-      
-      // Extract message with fallbacks
-      const message = log.message || log.msg || log.description || 
-                      (log.status ? `Status: ${log.status}` : JSON.stringify(log));
-      
-      // Extract other common fields
-      return {
-        id: log.id || `log_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-        level,
-        message,
-        timestamp,
-        service,
-        userId: log.user_id || log.userId,
-        sessionId: log.session_id || log.sessionId,
-        additionalData: log
-      };
-    });
+    // Format logs consistently
+    const formattedLogs = logs.map(log => ({
+      id: log.id || `log_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+      level: log.level || (log.status === 'error' ? 'error' : 
+                          log.status === 'warn' ? 'warn' : 'info'),
+      message: log.message || log.msg || log.description || 
+               (log.status ? `Status: ${log.status}` : JSON.stringify(log)),
+      timestamp: log.timestamp || log.created_at || new Date().toISOString(),
+      service: log.service || source,
+      userId: log.user_id || log.userId,
+      sessionId: log.session_id || log.sessionId,
+      additionalData: log
+    }));
 
     return new Response(
       JSON.stringify({ 
         logs: formattedLogs,
         total: totalCount,
         source,
-        timeRange
+        timeRange,
+        isSampleData: logs.some(log => log.additionalData?.sample)
       }),
       {
         status: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        headers: { 
+          ...corsHeaders, 
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store, no-cache, must-revalidate"
+        },
       }
     );
   } catch (error) {
@@ -269,20 +232,22 @@ Deno.serve(async (req) => {
     
     return new Response(
       JSON.stringify({ 
-        error: "An error occurred while fetching logs",
-        details: error.message,
-        logs: generateSampleLogs(10) // Always return some sample logs even on error
+        error: error.message || "An error occurred while fetching logs",
+        status: "error",
+        isSampleData: true,
+        logs: generateSampleLogs(10) // Provide sample logs on error
       }),
       {
-        status: 200, // Return 200 even on error to prevent frontend failures
+        status: error.message?.includes("Authorization") ? 401 :
+               error.message?.includes("Admin") ? 403 : 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       }
     );
   }
 });
 
-// Helper function to generate sample logs when no real logs are available
-function generateSampleLogs(count = 10, serviceType = null) {
+// Helper function to generate sample logs
+function generateSampleLogs(count = 10, serviceType: string | null = null) {
   const services = serviceType ? [serviceType] : ['auth', 'database', 'api', 'storage', 'edge-functions'];
   const levels = ['info', 'warn', 'error', 'debug'];
   const messages = [
@@ -317,13 +282,5 @@ function generateSampleLogs(count = 10, serviceType = null) {
         sample: true
       }
     };
-  });
-}
-
-// Helper function to generate a random UUID (for the 'all' source fallback query)
-function uuid() {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-    const r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
-    return v.toString(16);
   });
 }
