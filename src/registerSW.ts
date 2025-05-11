@@ -14,9 +14,22 @@ export function registerSW() {
 
     wb.addEventListener('installed', (event) => {
       if (event.isUpdate) {
-        if (confirm('New version available! Reload to update?')) {
-          window.location.reload();
-        }
+        // Create update notification using vanilla JavaScript
+        const notification = document.createElement('div');
+        notification.className = 'update-notification';
+        
+        const message = document.createElement('p');
+        message.textContent = 'A new version of the application is available.';
+        
+        const reloadButton = document.createElement('button');
+        reloadButton.textContent = 'Reload';
+        reloadButton.onclick = () => window.location.reload();
+        reloadButton.className = 'bg-blue-600 text-white px-3 py-1 rounded-md hover:bg-blue-700 transition-colors';
+        
+        notification.appendChild(message);
+        notification.appendChild(reloadButton);
+        
+        document.body.appendChild(notification);
       }
     });
 
