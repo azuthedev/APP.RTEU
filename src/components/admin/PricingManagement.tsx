@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
-import { useToast } from '../ui/use-toast';
+import { useToast } from '../../components/ui/use-toast';
 import { 
   Table,
   TableBody,
@@ -80,50 +80,63 @@ const PricingManagement: React.FC = () => {
     try {
       setLoading(true);
       
-      // Fetch vehicle base prices
-      const { data: vehicleData, error: vehicleError } = await supabase
-        .from('vehicle_base_prices')
-        .select('*')
-        .order('vehicle_type');
-        
-      if (vehicleError) throw vehicleError;
-      
-      // Fetch zones
+      // For zones, use a secure RPC function instead of direct table access
       const { data: zoneData, error: zoneError } = await supabase
-        .from('zones')
-        .select('id, name');
+        .rpc('get_zones_list');
         
       if (zoneError) throw zoneError;
       
-      // Fetch zone multipliers
-      const { data: multiplierData, error: multiplierError } = await supabase
-        .from('zone_multipliers')
-        .select(`
-          id,
-          zone_id,
-          multiplier,
-          zones (
-            name
-          )
-        `);
-        
-      if (multiplierError) throw multiplierError;
-      
-      // Fetch fixed routes
-      const { data: routeData, error: routeError } = await supabase
-        .from('fixed_routes')
-        .select('*')
-        .order('origin_name');
-        
-      if (routeError) throw routeError;
-      
-      setVehiclePrices(vehicleData || []);
       setZones(zoneData || []);
-      setZoneMultipliers(multiplierData?.map(m => ({
-        ...m,
-        zone_name: m.zones?.name || 'Unknown Zone'
-      })) || []);
-      setFixedRoutes(routeData || []);
+      
+      // For pricing data, use a simpler approach since we can't deploy an edge function
+      // We'll use direct RPC calls with proper functions set up in the database
+      
+      // Fetch vehicle base prices using RPC
+      const { data: vehicleData, error: vehicleError } = await supabase
+        .rpc('get_vehicle_prices');
+      
+      if (vehicleError) {
+        console.error('Error fetching vehicle prices:', vehicleError);
+        toast({
+          variant: "destructive",
+          title: "Error",
+          description: "Failed to fetch vehicle prices. Please try again."
+        });
+      } else {
+        setVehiclePrices(vehicleData || []);
+      }
+      
+      // Fetch zone multipliers using RPC
+      const { data: multiplierData, error: multiplierError } = await supabase
+        .rpc('get_zone_multipliers');
+        
+      if (multiplierError) {
+        console.error('Error fetching zone multipliers:', multiplierError);
+        toast({
+          variant: "destructive",
+          title: "Error",
+          description: "Failed to fetch zone multipliers. Please try again."
+        });
+      } else {
+        setZoneMultipliers(multiplierData || []);
+      }
+      
+      // Fetch fixed routes using RPC
+      const { data: routeData, error: routeError } = await supabase
+        .rpc('get_fixed_routes');
+        
+      if (routeError) {
+        console.error('Error fetching fixed routes:', routeError);
+        toast({
+          variant: "destructive",
+          title: "Error",
+          description: "Failed to fetch fixed routes. Please try again."
+        });
+      } else {
+        setFixedRoutes(routeData || []);
+      }
+      
+      console.log('Data fetched successfully');
       
     } catch (error: any) {
       console.error('Error fetching data:', error);
@@ -242,49 +255,61 @@ const PricingManagement: React.FC = () => {
     try {
       setSaving(true);
       
+      // Use individual RPC functions to save each type of data
+      
       // Save vehicle prices
-      for (const price of vehiclePrices) {
-        if (price.id.startsWith('new_')) {
-          const { id, ...newPrice } = price;
-          await supabase.from('vehicle_base_prices').insert(newPrice);
-        } else {
-          const { id, ...updatePrice } = price;
-          await supabase.from('vehicle_base_prices')
-            .update(updatePrice)
-            .eq('id', id);
-        }
+      const { error: vehicleError } = await supabase
+        .rpc('update_vehicle_prices', {
+          prices_json: JSON.stringify(vehiclePrices)
+        });
+        
+      if (vehicleError) {
+        console.error('Error saving vehicle prices:', vehicleError);
+        toast({
+          variant: "destructive",
+          title: "Error",
+          description: "Failed to save vehicle prices: " + vehicleError.message
+        });
       }
       
-      // Save zone multipliers
-      for (const multiplier of zoneMultipliers) {
-        if (multiplier.id.startsWith('new_')) {
-          const { id, zone_name, ...newMultiplier } = multiplier;
-          await supabase.from('zone_multipliers').insert(newMultiplier);
-        } else {
-          const { id, zone_name, ...updateMultiplier } = multiplier;
-          await supabase.from('zone_multipliers')
-            .update(updateMultiplier)
-            .eq('id', id);
-        }
+      // Save zone multipliers (remove zone_name as it's not in the DB schema)
+      const multipliers = zoneMultipliers.map(({ zone_name, ...rest }) => rest);
+      
+      const { error: multiplierError } = await supabase
+        .rpc('update_zone_multipliers', {
+          multipliers_json: JSON.stringify(multipliers)
+        });
+        
+      if (multiplierError) {
+        console.error('Error saving zone multipliers:', multiplierError);
+        toast({
+          variant: "destructive",
+          title: "Error",
+          description: "Failed to save zone multipliers: " + multiplierError.message
+        });
       }
       
       // Save fixed routes
-      for (const route of fixedRoutes) {
-        if (route.id.startsWith('new_')) {
-          const { id, ...newRoute } = route;
-          await supabase.from('fixed_routes').insert(newRoute);
-        } else {
-          const { id, ...updateRoute } = route;
-          await supabase.from('fixed_routes')
-            .update(updateRoute)
-            .eq('id', id);
-        }
+      const { error: routeError } = await supabase
+        .rpc('update_fixed_routes', {
+          routes_json: JSON.stringify(fixedRoutes)
+        });
+        
+      if (routeError) {
+        console.error('Error saving fixed routes:', routeError);
+        toast({
+          variant: "destructive",
+          title: "Error",
+          description: "Failed to save fixed routes: " + routeError.message
+        });
       }
       
-      toast({
-        title: "Success",
-        description: "Pricing changes saved successfully"
-      });
+      if (!vehicleError && !multiplierError && !routeError) {
+        toast({
+          title: "Success",
+          description: "Pricing changes saved successfully"
+        });
+      }
       
       // Refresh data
       await fetchData();

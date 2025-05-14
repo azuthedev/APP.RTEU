@@ -15,12 +15,32 @@ import { useAuth } from '../contexts/AuthContext';
 import { Toaster } from '../components/ui/toaster';
 import { motion, AnimatePresence } from 'framer-motion';
 
+const LAST_ADMIN_PATH_KEY = 'lastAdminPath';
+
 const AdminLayout = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { userData, loading } = useAuth();
   const [isSidebarOpen, setIsSidebarOpen] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+
+  // Save current path to localStorage whenever location changes
+  useEffect(() => {
+    if (location.pathname.startsWith('/admin')) {
+      localStorage.setItem(LAST_ADMIN_PATH_KEY, location.pathname);
+    }
+  }, [location.pathname]);
+  
+  // On initial load, check if there's a saved path to restore
+  useEffect(() => {
+    // Only redirect if we're at the root admin path and there's a saved path
+    if (location.pathname === '/admin' && !loading) {
+      const savedPath = localStorage.getItem(LAST_ADMIN_PATH_KEY);
+      if (savedPath && savedPath !== '/admin') {
+        navigate(savedPath, { replace: true });
+      }
+    }
+  }, [location.pathname, navigate, loading]);
 
   // Redirect if not admin or support
   useEffect(() => {

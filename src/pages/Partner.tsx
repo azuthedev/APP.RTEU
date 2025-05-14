@@ -19,6 +19,8 @@ import ThemeToggle from '../components/ThemeToggle';
 import DriverAvailabilityToggle from '../components/partner/DriverAvailabilityToggle';
 import { adminApi } from '../lib/adminApi';
 
+const LAST_PARTNER_PATH_KEY = 'lastPartnerPath';
+
 const Partner = () => {
   const navigate = useNavigate();
   const location = useLocation();
@@ -30,6 +32,24 @@ const Partner = () => {
   const [showVerificationPrompt, setShowVerificationPrompt] = useState(false);
   const [driverVerificationStatus, setDriverVerificationStatus] = useState<string | null>(null);
   const [showAvailabilityTooltip, setShowAvailabilityTooltip] = useState(false);
+
+  // Save current path to localStorage whenever location changes
+  useEffect(() => {
+    if (location.pathname.startsWith('/partner')) {
+      localStorage.setItem(LAST_PARTNER_PATH_KEY, location.pathname);
+    }
+  }, [location.pathname]);
+  
+  // On initial load, check if there's a saved path to restore
+  useEffect(() => {
+    // Only redirect if we're at the root partner path and there's a saved path
+    if (location.pathname === '/partner' && !loading) {
+      const savedPath = localStorage.getItem(LAST_PARTNER_PATH_KEY);
+      if (savedPath && savedPath !== '/partner') {
+        navigate(savedPath, { replace: true });
+      }
+    }
+  }, [location.pathname, navigate, loading]);
 
   // Setup admin view flag
   useEffect(() => {
