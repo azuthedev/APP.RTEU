@@ -30,23 +30,29 @@ Deno.serve(async (req) => {
 
     const token = authHeader.replace("Bearer ", "");
 
-    // Create Supabase admin client with service role key
-    const supabaseAdmin = createClient(
+    // Initialize Supabase client with auth token
+    const supabase = createClient(
       Deno.env.get("SUPABASE_URL") || "",
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "",
+      Deno.env.get("SUPABASE_ANON_KEY") || "",
       {
         auth: {
           persistSession: false,
-        }
+          autoRefreshToken: false,
+        },
+        global: {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        },
       }
     );
 
-    // Use admin client to verify the JWT token
-    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
+    // Verify user and check admin status
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
     
     if (authError || !user) {
       return new Response(
-        JSON.stringify({ error: "Invalid or expired token", details: authError }),
+        JSON.stringify({ error: "Invalid or expired token" }),
         {
           status: 401,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -55,7 +61,7 @@ Deno.serve(async (req) => {
     }
 
     // Check if user is admin
-    const { data: userData, error: userError } = await supabaseAdmin
+    const { data: userData, error: userError } = await supabase
       .from("users")
       .select("user_role")
       .eq("id", user.id)
@@ -71,31 +77,48 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Fetch all pricing data
+    // Direct queries instead of RPC functions to avoid ambiguous column references
     const [
       { data: vehiclePrices, error: vehicleError },
       { data: zoneMultipliers, error: zoneError },
       { data: fixedRoutes, error: routeError }
     ] = await Promise.all([
-      supabaseAdmin
-        .from("vehicle_base_prices")
-        .select("*")
-        .order("vehicle_type"),
-      supabaseAdmin
-        .from("zone_multipliers")
-        .select(`
-          *,
-          zone:zones(name)
-        `)
-        .order("created_at"),
-      supabaseAdmin
-        .from("fixed_routes")
-        .select("*")
-        .order("origin_name")
+      supabase.from('vehicle_base_prices').select('*'),
+      supabase.from('zone_multipliers').select('zone_multipliers.id, zone_id, multiplier'),
+      supabase.from('fixed_routes').select('*')
     ]);
 
-    if (vehicleError || zoneError || routeError) {
-      throw new Error("Failed to fetch pricing data");
+    if (vehicleError) {
+      console.error('Error fetching vehicle prices:', vehicleError);
+      return new Response(
+        JSON.stringify({ error: "Failed to fetch vehicle prices", details: vehicleError }),
+        {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    if (zoneError) {
+      console.error('Error fetching zone multipliers:', zoneError);
+      return new Response(
+        JSON.stringify({ error: "Failed to fetch zone multipliers", details: zoneError }),
+        {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    if (routeError) {
+      console.error('Error fetching fixed routes:', routeError);
+      return new Response(
+        JSON.stringify({ error: "Failed to fetch fixed routes", details: routeError }),
+        {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
     }
 
     return new Response(
@@ -114,7 +137,7 @@ Deno.serve(async (req) => {
     console.error("Unexpected error:", error);
     
     return new Response(
-      JSON.stringify({ error: "An unexpected error occurred", details: error.message }),
+      JSON.stringify({ error: "An unexpected error occurred" }),
       {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
