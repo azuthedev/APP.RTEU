@@ -166,5 +166,29 @@ export const adminApi = {
   // Fetch driver statistics
   fetchDriverStats: async () => {
     return callEdgeFunction('admin-fetch-driver-stats', {});
+  },
+  
+  // Fetch pricing data
+  fetchPricingData: async () => {
+    return callEdgeFunction('admin-fetch-pricing', {});
+  },
+  
+  // Update pricing data
+  updatePricingData: async (pricingData) => {
+    return callEdgeFunction('admin-update-pricing', pricingData);
+  },
+  
+  // Simulate pricing
+  simulatePricing: async (origin, destination, vehicleType) => {
+    return callEdgeFunction('simulate-pricing', {
+      origin,
+      destination,
+      vehicleType
+    });
+  },
+  
+  // Refresh pricing cache
+  refreshPricingCache: async () => {
+    return callEdgeFunction('refresh-pricing-cache', {});
   }
 };

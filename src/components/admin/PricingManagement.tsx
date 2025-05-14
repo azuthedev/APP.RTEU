@@ -1,15 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../../lib/supabase';
-import { useToast } from '../../components/ui/use-toast';
-import { 
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '../ui/table';
-import { 
+import { RefreshCw, Loader2, PlusCircle, Trash2, Save, AlertTriangle } from 'lucide-react';
+import { useToast } from '../ui/use-toast';
+import PricingSimulator from './PricingManagement/PricingSimulator';
+import PricingChangeLogs from './PricingManagement/PricingChangeLogs';
+import { adminApi } from '../../lib/adminApi';
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -21,16 +16,14 @@ import {
 } from '../ui/alert-dialog';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
-import { 
-  Car, 
-  Map, 
-  Route, 
-  Plus, 
-  Trash2, 
-  Save,
-  AlertTriangle,
-  Loader2
-} from 'lucide-react';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '../ui/table';
 
 interface VehicleBasePrice {
   id: string;
@@ -53,17 +46,24 @@ interface FixedRoute {
   fixed_price: number;
 }
 
+interface Zone {
+  id: string;
+  name: string;
+}
+
 const PricingManagement: React.FC = () => {
   // State for data
   const [vehiclePrices, setVehiclePrices] = useState<VehicleBasePrice[]>([]);
   const [zoneMultipliers, setZoneMultipliers] = useState<ZoneMultiplier[]>([]);
   const [fixedRoutes, setFixedRoutes] = useState<FixedRoute[]>([]);
-  const [zones, setZones] = useState<{ id: string; name: string; }[]>([]);
+  const [zones, setZones] = useState<Zone[]>([]);
   
   // State for loading and saving
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [activeTab, setActiveTab] = useState('tables');
   
   // State for confirmation dialog
   const [showConfirmation, setShowConfirmation] = useState(false);
@@ -71,7 +71,6 @@ const PricingManagement: React.FC = () => {
   // Toast notifications
   const { toast } = useToast();
 
-  // Load initial data
   useEffect(() => {
     fetchData();
   }, []);
@@ -80,63 +79,36 @@ const PricingManagement: React.FC = () => {
     try {
       setLoading(true);
       
-      // For zones, use a secure RPC function instead of direct table access
-      const { data: zoneData, error: zoneError } = await supabase
-        .rpc('get_zones_list');
-        
-      if (zoneError) throw zoneError;
+      // Fetch all pricing data using edge function
+      const pricingData = await adminApi.fetchPricingData();
       
-      setZones(zoneData || []);
-      
-      // For pricing data, use a simpler approach since we can't deploy an edge function
-      // We'll use direct RPC calls with proper functions set up in the database
-      
-      // Fetch vehicle base prices using RPC
-      const { data: vehicleData, error: vehicleError } = await supabase
-        .rpc('get_vehicle_prices');
-      
-      if (vehicleError) {
-        console.error('Error fetching vehicle prices:', vehicleError);
-        toast({
-          variant: "destructive",
-          title: "Error",
-          description: "Failed to fetch vehicle prices. Please try again."
-        });
-      } else {
-        setVehiclePrices(vehicleData || []);
+      if (!pricingData) {
+        throw new Error('Failed to fetch pricing data');
       }
       
-      // Fetch zone multipliers using RPC
-      const { data: multiplierData, error: multiplierError } = await supabase
-        .rpc('get_zone_multipliers');
-        
-      if (multiplierError) {
-        console.error('Error fetching zone multipliers:', multiplierError);
-        toast({
-          variant: "destructive",
-          title: "Error",
-          description: "Failed to fetch zone multipliers. Please try again."
-        });
-      } else {
-        setZoneMultipliers(multiplierData || []);
-      }
+      // Update state with fetched data
+      setVehiclePrices(pricingData.vehiclePrices || []);
+      setZoneMultipliers(pricingData.zoneMultipliers || []);
+      setFixedRoutes(pricingData.fixedRoutes || []);
       
-      // Fetch fixed routes using RPC
-      const { data: routeData, error: routeError } = await supabase
-        .rpc('get_fixed_routes');
-        
-      if (routeError) {
-        console.error('Error fetching fixed routes:', routeError);
-        toast({
-          variant: "destructive",
-          title: "Error",
-          description: "Failed to fetch fixed routes. Please try again."
-        });
-      } else {
-        setFixedRoutes(routeData || []);
-      }
+      // Fetch zones list
+      // Note: Zones are used for dropdowns when selecting zone_id
+      const zonesQuery = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/rest/v1/rpc/get_zones_list`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': `${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+            'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+            'Prefer': 'return=representation'
+          },
+          body: JSON.stringify({})
+        }
+      );
       
-      console.log('Data fetched successfully');
+      const zonesData = await zonesQuery.json();
+      setZones(zonesData || []);
       
     } catch (error: any) {
       console.error('Error fetching data:', error);
@@ -147,6 +119,27 @@ const PricingManagement: React.FC = () => {
       });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleRefreshCache = async () => {
+    setIsRefreshing(true);
+    try {
+      await adminApi.refreshPricingCache();
+      
+      toast({
+        title: "Success",
+        description: "Pricing cache refreshed successfully"
+      });
+    } catch (error) {
+      console.error('Error refreshing cache:', error);
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Failed to refresh pricing cache"
+      });
+    } finally {
+      setIsRefreshing(false);
     }
   };
 
@@ -255,61 +248,21 @@ const PricingManagement: React.FC = () => {
     try {
       setSaving(true);
       
-      // Use individual RPC functions to save each type of data
+      // Use the edge function to save all pricing data
+      const result = await adminApi.updatePricingData({
+        vehiclePrices,
+        zoneMultipliers,
+        fixedRoutes
+      });
       
-      // Save vehicle prices
-      const { error: vehicleError } = await supabase
-        .rpc('update_vehicle_prices', {
-          prices_json: JSON.stringify(vehiclePrices)
-        });
-        
-      if (vehicleError) {
-        console.error('Error saving vehicle prices:', vehicleError);
-        toast({
-          variant: "destructive",
-          title: "Error",
-          description: "Failed to save vehicle prices: " + vehicleError.message
-        });
+      if (!result || result.error) {
+        throw new Error(result?.error || 'Failed to save changes');
       }
       
-      // Save zone multipliers (remove zone_name as it's not in the DB schema)
-      const multipliers = zoneMultipliers.map(({ zone_name, ...rest }) => rest);
-      
-      const { error: multiplierError } = await supabase
-        .rpc('update_zone_multipliers', {
-          multipliers_json: JSON.stringify(multipliers)
-        });
-        
-      if (multiplierError) {
-        console.error('Error saving zone multipliers:', multiplierError);
-        toast({
-          variant: "destructive",
-          title: "Error",
-          description: "Failed to save zone multipliers: " + multiplierError.message
-        });
-      }
-      
-      // Save fixed routes
-      const { error: routeError } = await supabase
-        .rpc('update_fixed_routes', {
-          routes_json: JSON.stringify(fixedRoutes)
-        });
-        
-      if (routeError) {
-        console.error('Error saving fixed routes:', routeError);
-        toast({
-          variant: "destructive",
-          title: "Error",
-          description: "Failed to save fixed routes: " + routeError.message
-        });
-      }
-      
-      if (!vehicleError && !multiplierError && !routeError) {
-        toast({
-          title: "Success",
-          description: "Pricing changes saved successfully"
-        });
-      }
+      toast({
+        title: "Success",
+        description: "Pricing changes saved successfully"
+      });
       
       // Refresh data
       await fetchData();
@@ -328,233 +281,295 @@ const PricingManagement: React.FC = () => {
     }
   };
 
-  if (loading) {
+  const renderPricingTables = () => {
+    if (loading) {
+      return (
+        <div className="flex items-center justify-center h-64">
+          <Loader2 className="w-8 h-8 text-blue-600 dark:text-blue-400 animate-spin" />
+        </div>
+      );
+    }
+
     return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="w-8 h-8 text-blue-600 dark:text-blue-400 animate-spin" />
+      <div className="space-y-8">
+        {/* Vehicle Base Prices */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6 border dark:border-gray-700">
+          <div className="flex justify-between items-center mb-4">
+            <div className="flex items-center">
+              <h3 className="text-lg font-medium dark:text-white">Vehicle Base Prices</h3>
+            </div>
+            <Button onClick={addVehiclePrice} variant="outline" size="sm">
+              <PlusCircle className="w-4 h-4 mr-2" />
+              Add Vehicle
+            </Button>
+          </div>
+          
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Vehicle Type</TableHead>
+                <TableHead>Base Price per KM</TableHead>
+                <TableHead className="w-20">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {vehiclePrices.map(price => (
+                <TableRow key={price.id}>
+                  <TableCell>
+                    <Input
+                      value={price.vehicle_type}
+                      onChange={e => updateVehiclePrice(price.id, 'vehicle_type', e.target.value)}
+                      placeholder="e.g., Sedan"
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <Input
+                      type="number"
+                      value={price.base_price_per_km}
+                      onChange={e => updateVehiclePrice(price.id, 'base_price_per_km', parseFloat(e.target.value))}
+                      min="0"
+                      step="0.01"
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => deleteVehiclePrice(price.id)}
+                      className="text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+
+        {/* Zone Multipliers */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6 border dark:border-gray-700">
+          <div className="flex justify-between items-center mb-4">
+            <div className="flex items-center">
+              <h3 className="text-lg font-medium dark:text-white">Zone Multipliers</h3>
+            </div>
+            <Button onClick={addZoneMultiplier} variant="outline" size="sm">
+              <PlusCircle className="w-4 h-4 mr-2" />
+              Add Multiplier
+            </Button>
+          </div>
+          
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Zone</TableHead>
+                <TableHead>Multiplier</TableHead>
+                <TableHead className="w-20">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {zoneMultipliers.map(multiplier => (
+                <TableRow key={multiplier.id}>
+                  <TableCell>
+                    <select
+                      value={multiplier.zone_id}
+                      onChange={e => updateZoneMultiplier(multiplier.id, 'zone_id', e.target.value)}
+                      className="w-full px-3 py-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    >
+                      {zones.map(zone => (
+                        <option key={zone.id} value={zone.id}>{zone.name}</option>
+                      ))}
+                    </select>
+                  </TableCell>
+                  <TableCell>
+                    <Input
+                      type="number"
+                      value={multiplier.multiplier}
+                      onChange={e => updateZoneMultiplier(multiplier.id, 'multiplier', parseFloat(e.target.value))}
+                      min="0.1"
+                      step="0.1"
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => deleteZoneMultiplier(multiplier.id)}
+                      className="text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+
+        {/* Fixed Routes */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6 border dark:border-gray-700">
+          <div className="flex justify-between items-center mb-4">
+            <div className="flex items-center">
+              <h3 className="text-lg font-medium dark:text-white">Fixed Routes</h3>
+            </div>
+            <Button onClick={addFixedRoute} variant="outline" size="sm">
+              <PlusCircle className="w-4 h-4 mr-2" />
+              Add Route
+            </Button>
+          </div>
+          
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Origin</TableHead>
+                <TableHead>Destination</TableHead>
+                <TableHead>Vehicle Type</TableHead>
+                <TableHead>Fixed Price</TableHead>
+                <TableHead className="w-20">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {fixedRoutes.map(route => (
+                <TableRow key={route.id}>
+                  <TableCell>
+                    <Input
+                      value={route.origin_name}
+                      onChange={e => updateFixedRoute(route.id, 'origin_name', e.target.value)}
+                      placeholder="e.g., Airport"
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <Input
+                      value={route.destination_name}
+                      onChange={e => updateFixedRoute(route.id, 'destination_name', e.target.value)}
+                      placeholder="e.g., City Center"
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <select
+                      value={route.vehicle_type}
+                      onChange={e => updateFixedRoute(route.id, 'vehicle_type', e.target.value)}
+                      className="w-full px-3 py-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    >
+                      {vehiclePrices.map(vehicle => (
+                        <option key={vehicle.id} value={vehicle.vehicle_type}>
+                          {vehicle.vehicle_type}
+                        </option>
+                      ))}
+                    </select>
+                  </TableCell>
+                  <TableCell>
+                    <Input
+                      type="number"
+                      value={route.fixed_price}
+                      onChange={e => updateFixedRoute(route.id, 'fixed_price', parseFloat(e.target.value))}
+                      min="0"
+                      step="0.01"
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => deleteFixedRoute(route.id)}
+                      className="text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
       </div>
     );
-  }
+  };
 
   return (
-    <div className="space-y-8">
-      {/* Header */}
-      <div className="flex justify-between items-center">
+    <div>
+      <div className="flex justify-between items-center mb-6">
         <h2 className="text-xl font-semibold dark:text-white">Pricing Management</h2>
-        {hasChanges && (
-          <Button
-            onClick={() => setShowConfirmation(true)}
-            disabled={saving}
-            className="bg-blue-600 hover:bg-blue-700"
+        <div className="flex space-x-2">
+          <button
+            onClick={handleRefreshCache}
+            disabled={isRefreshing}
+            className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors disabled:bg-blue-400"
           >
-            {saving ? (
+            {isRefreshing ? (
               <>
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                Saving...
+                <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                Refreshing...
               </>
             ) : (
               <>
-                <Save className="w-4 h-4 mr-2" />
-                Save Changes
+                <RefreshCw className="w-5 h-5 mr-2" />
+                Force Refresh Cache
               </>
             )}
-          </Button>
-        )}
+          </button>
+          
+          {hasChanges && (
+            <Button
+              onClick={() => setShowConfirmation(true)}
+              disabled={saving}
+              className="bg-blue-600 hover:bg-blue-700"
+            >
+              {saving ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <Save className="w-4 h-4 mr-2" />
+                  Save Changes
+                </>
+              )}
+            </Button>
+          )}
+        </div>
       </div>
 
-      {/* Vehicle Base Prices */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6 border dark:border-gray-700">
-        <div className="flex justify-between items-center mb-4">
-          <div className="flex items-center">
-            <Car className="w-5 h-5 text-blue-600 dark:text-blue-400 mr-2" />
-            <h3 className="text-lg font-medium dark:text-white">Vehicle Base Prices</h3>
-          </div>
-          <Button onClick={addVehiclePrice} variant="outline" size="sm">
-            <Plus className="w-4 h-4 mr-2" />
-            Add Vehicle
-          </Button>
-        </div>
-        
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Vehicle Type</TableHead>
-              <TableHead>Base Price per KM</TableHead>
-              <TableHead className="w-20">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {vehiclePrices.map(price => (
-              <TableRow key={price.id}>
-                <TableCell>
-                  <Input
-                    value={price.vehicle_type}
-                    onChange={e => updateVehiclePrice(price.id, 'vehicle_type', e.target.value)}
-                    placeholder="e.g., Sedan"
-                  />
-                </TableCell>
-                <TableCell>
-                  <Input
-                    type="number"
-                    value={price.base_price_per_km}
-                    onChange={e => updateVehiclePrice(price.id, 'base_price_per_km', parseFloat(e.target.value))}
-                    min="0"
-                    step="0.01"
-                  />
-                </TableCell>
-                <TableCell>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => deleteVehiclePrice(price.id)}
-                    className="text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+      {/* Tab Navigation */}
+      <div className="mb-6 border-b border-gray-200 dark:border-gray-700">
+        <ul className="flex flex-wrap -mb-px text-sm font-medium text-center">
+          <li className="mr-2">
+            <button
+              className={`inline-block p-4 border-b-2 rounded-t-lg ${
+                activeTab === 'tables' 
+                  ? 'border-blue-600 dark:border-blue-500 text-blue-600 dark:text-blue-500' 
+                  : 'border-transparent hover:border-gray-300 dark:hover:border-gray-600 hover:text-gray-600 dark:hover:text-gray-300'
+              }`}
+              onClick={() => setActiveTab('tables')}
+            >
+              Pricing Tables
+            </button>
+          </li>
+          <li className="mr-2">
+            <button
+              className={`inline-block p-4 border-b-2 rounded-t-lg ${
+                activeTab === 'tools' 
+                  ? 'border-blue-600 dark:border-blue-500 text-blue-600 dark:text-blue-500' 
+                  : 'border-transparent hover:border-gray-300 dark:hover:border-gray-600 hover:text-gray-600 dark:hover:text-gray-300'
+              }`}
+              onClick={() => setActiveTab('tools')}
+            >
+              Pricing Tools
+            </button>
+          </li>
+        </ul>
       </div>
 
-      {/* Zone Multipliers */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6 border dark:border-gray-700">
-        <div className="flex justify-between items-center mb-4">
-          <div className="flex items-center">
-            <Map className="w-5 h-5 text-purple-600 dark:text-purple-400 mr-2" />
-            <h3 className="text-lg font-medium dark:text-white">Zone Multipliers</h3>
-          </div>
-          <Button onClick={addZoneMultiplier} variant="outline" size="sm">
-            <Plus className="w-4 h-4 mr-2" />
-            Add Multiplier
-          </Button>
+      {/* Tab Content */}
+      {activeTab === 'tables' ? (
+        renderPricingTables()
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <PricingSimulator />
+          <PricingChangeLogs />
         </div>
-        
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Zone</TableHead>
-              <TableHead>Multiplier</TableHead>
-              <TableHead className="w-20">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {zoneMultipliers.map(multiplier => (
-              <TableRow key={multiplier.id}>
-                <TableCell>
-                  <select
-                    value={multiplier.zone_id}
-                    onChange={e => updateZoneMultiplier(multiplier.id, 'zone_id', e.target.value)}
-                    className="w-full px-3 py-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-                  >
-                    {zones.map(zone => (
-                      <option key={zone.id} value={zone.id}>{zone.name}</option>
-                    ))}
-                  </select>
-                </TableCell>
-                <TableCell>
-                  <Input
-                    type="number"
-                    value={multiplier.multiplier}
-                    onChange={e => updateZoneMultiplier(multiplier.id, 'multiplier', parseFloat(e.target.value))}
-                    min="0.1"
-                    step="0.1"
-                  />
-                </TableCell>
-                <TableCell>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => deleteZoneMultiplier(multiplier.id)}
-                    className="text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </div>
-
-      {/* Fixed Routes */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6 border dark:border-gray-700">
-        <div className="flex justify-between items-center mb-4">
-          <div className="flex items-center">
-            <Route className="w-5 h-5 text-green-600 dark:text-green-400 mr-2" />
-            <h3 className="text-lg font-medium dark:text-white">Fixed Routes</h3>
-          </div>
-          <Button onClick={addFixedRoute} variant="outline" size="sm">
-            <Plus className="w-4 h-4 mr-2" />
-            Add Route
-          </Button>
-        </div>
-        
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Origin</TableHead>
-              <TableHead>Destination</TableHead>
-              <TableHead>Vehicle Type</TableHead>
-              <TableHead>Fixed Price</TableHead>
-              <TableHead className="w-20">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {fixedRoutes.map(route => (
-              <TableRow key={route.id}>
-                <TableCell>
-                  <Input
-                    value={route.origin_name}
-                    onChange={e => updateFixedRoute(route.id, 'origin_name', e.target.value)}
-                    placeholder="e.g., Airport"
-                  />
-                </TableCell>
-                <TableCell>
-                  <Input
-                    value={route.destination_name}
-                    onChange={e => updateFixedRoute(route.id, 'destination_name', e.target.value)}
-                    placeholder="e.g., City Center"
-                  />
-                </TableCell>
-                <TableCell>
-                  <select
-                    value={route.vehicle_type}
-                    onChange={e => updateFixedRoute(route.id, 'vehicle_type', e.target.value)}
-                    className="w-full px-3 py-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-                  >
-                    {vehiclePrices.map(vehicle => (
-                      <option key={vehicle.id} value={vehicle.vehicle_type}>
-                        {vehicle.vehicle_type}
-                      </option>
-                    ))}
-                  </select>
-                </TableCell>
-                <TableCell>
-                  <Input
-                    type="number"
-                    value={route.fixed_price}
-                    onChange={e => updateFixedRoute(route.id, 'fixed_price', parseFloat(e.target.value))}
-                    min="0"
-                    step="0.01"
-                  />
-                </TableCell>
-                <TableCell>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => deleteFixedRoute(route.id)}
-                    className="text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </div>
+      )}
 
       {/* Confirmation Dialog */}
       <AlertDialog open={showConfirmation} onOpenChange={setShowConfirmation}>
