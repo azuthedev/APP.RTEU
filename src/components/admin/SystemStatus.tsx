@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useToast } from '../ui/use-toast';
 import { useAuth } from '../../contexts/AuthContext';
@@ -9,18 +9,18 @@ import {
   Clock, 
   Users, 
   ArrowUpRight, 
-  Database,
   Server,
-  Download,
   CheckCircle,
-  AlertCircle
+  AlertCircle,
+  Zap
 } from 'lucide-react';
+import { format } from 'date-fns';
+import { adminApi } from '../../lib/adminApi';
 
 const SystemStatus: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [systemStats, setSystemStats] = useState({
-    databaseSize: null as string | null,
     users: {
       total: 0,
       admin: 0,
@@ -30,196 +30,136 @@ const SystemStatus: React.FC = () => {
     },
     recentActivity: [] as any[],
     serverTime: '',
-    uptime: null as string | null,
     supabaseStatus: 'unknown' as 'healthy' | 'degraded' | 'down' | 'unknown',
-    databaseStatus: {
-      status: 'unknown' as 'healthy' | 'degraded' | 'down' | 'unknown',
-      latency: null as number | null,
-      connections: null as number | null
+    authStatus: {
+      status: 'unknown' as 'healthy' | 'degraded' | 'down' | 'unknown'
     },
     storageStatus: {
       status: 'unknown' as 'healthy' | 'degraded' | 'down' | 'unknown',
-      size: null as string | null
     },
-    authStatus: {
-      status: 'unknown' as 'healthy' | 'degraded' | 'down' | 'unknown'
+    priceEngineStatus: {
+      status: 'unknown' as 'healthy' | 'degraded' | 'down' | 'unknown',
+      timestamp: null as string | null
     }
   });
+  
   const { toast } = useToast();
   const { userData } = useAuth();
-  const pollingInterval = useRef<NodeJS.Timeout | null>(null);
-
   const isAdmin = userData?.user_role === 'admin';
 
   useEffect(() => {
     if (isAdmin) {
       fetchSystemStats();
-      
-      // Start polling every 30 seconds
-      pollingInterval.current = setInterval(fetchSystemStats, 30000);
     }
-    
-    return () => {
-      if (pollingInterval.current) {
-        clearInterval(pollingInterval.current);
-      }
-    };
   }, [isAdmin]);
 
   const fetchSystemStats = async () => {
     try {
       setRefreshing(true);
       
-      // Get database size
-      const { data: dbSizeData, error: dbSizeError } = await supabase.rpc('run_sql_query', {
-        sql_query: `
-          SELECT pg_size_pretty(pg_database_size(current_database())) as db_size;
-        `
-      });
-      
-      if (dbSizeError) throw dbSizeError;
+      // Check price engine health
+      const priceEngineStatus = await checkPriceEngineHealth();
       
       // Get user counts
-      const { data: userCountData, error: userCountError } = await supabase.rpc('run_sql_query', {
-        sql_query: `
-          SELECT 
-            COUNT(*) as total,
-            COUNT(CASE WHEN user_role = 'admin' THEN 1 END) as admin_count,
-            COUNT(CASE WHEN user_role = 'partner' THEN 1 END) as partner_count,
-            COUNT(CASE WHEN user_role = 'customer' THEN 1 END) as customer_count,
-            COUNT(CASE WHEN user_role = 'support' THEN 1 END) as support_count
-          FROM users;
-        `
-      });
+      const { count: totalUsers = 0 } = await supabase
+        .from('users')
+        .select('*', { count: 'exact', head: true });
       
-      if (userCountError) throw userCountError;
+      const { count: adminUsers = 0 } = await supabase
+        .from('users')
+        .select('*', { count: 'exact', head: true })
+        .eq('user_role', 'admin');
       
-      // Get recent activity (recent trips, signups, etc.)
-      const { data: recentActivityData, error: recentActivityError } = await supabase.rpc('run_sql_query', {
-        sql_query: `
-          (
-            SELECT 
-              'New user' as event_type,
-              u.name as title,
-              u.user_role as description,
-              u.created_at as timestamp
-            FROM users u
-            ORDER BY u.created_at DESC
-            LIMIT 5
-          )
-          UNION ALL
-          (
-            SELECT 
-              'New trip' as event_type,
-              COALESCE(
-                (SELECT name FROM users WHERE id = t.user_id), 
-                'Unknown'
-              ) as title,
-              CASE 
-                WHEN t.status = 'pending' THEN 'Pending trip'
-                WHEN t.status = 'accepted' THEN 'Accepted trip'
-                WHEN t.status = 'in_progress' THEN 'In-progress trip'
-                WHEN t.status = 'completed' THEN 'Completed trip'
-                WHEN t.status = 'cancelled' THEN 'Cancelled trip'
-                ELSE 'New trip'
-              END as description,
-              t.created_at as timestamp
-            FROM trips t
-            ORDER BY t.created_at DESC
-            LIMIT 5
-          )
-          ORDER BY timestamp DESC
-          LIMIT 10;
-        `
-      });
+      const { count: partnerUsers = 0 } = await supabase
+        .from('users')
+        .select('*', { count: 'exact', head: true })
+        .eq('user_role', 'partner');
       
-      if (recentActivityError) throw recentActivityError;
+      const { count: customerUsers = 0 } = await supabase
+        .from('users')
+        .select('*', { count: 'exact', head: true })
+        .eq('user_role', 'customer');
       
-      // Get server time and simulate uptime (for demo purposes)
-      const { data: serverTimeData, error: serverTimeError } = await supabase.rpc('run_sql_query', {
-        sql_query: `SELECT now() as server_time;`
-      });
+      const { count: supportUsers = 0 } = await supabase
+        .from('users')
+        .select('*', { count: 'exact', head: true })
+        .eq('user_role', 'support');
       
-      if (serverTimeError) throw serverTimeError;
+      // Fetch recent users (avoid using user:users!)
+      const { data: recentUsers } = await supabase
+        .from('users')
+        .select('name, user_role, created_at')
+        .order('created_at', { ascending: false })
+        .limit(5);
       
-      // For database status, check query latency
-      const startTime = Date.now();
-      const { error: pingError } = await supabase.rpc('run_sql_query', {
-        sql_query: `SELECT 1;`
-      });
-      const endTime = Date.now();
-      const queryLatency = endTime - startTime;
+      // Fetch recent trips (use explicit joins to avoid ambiguity)
+      const { data: recentTrips } = await supabase
+        .from('trips')
+        .select(`
+          id,
+          status,
+          datetime,
+          user_id
+        `)
+        .order('created_at', { ascending: false })
+        .limit(5);
       
-      // Get active database connections
-      const { data: connectionData, error: connectionError } = await supabase.rpc('run_sql_query', {
-        sql_query: `
-          SELECT count(*) as active_connections
-          FROM pg_stat_activity
-          WHERE state = 'active';
-        `
-      });
-      
-      if (connectionError) throw connectionError;
-      
-      // Get storage usage
-      const { data: storageData, error: storageError } = await supabase.rpc('run_sql_query', {
-        sql_query: `
-          SELECT COALESCE(
-            (SELECT pg_size_pretty(sum(pg_total_relation_size(c.oid)))
-            FROM pg_class c
-            LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE n.nspname = 'storage'), 
-            '0 bytes'
-          ) as storage_size;
-        `
-      });
-      
-      if (storageError) throw storageError;
-      
-      // Build uptime string (simulated for demo)
-      const uptimeDays = Math.floor(Math.random() * 100) + 1;
-      const uptimeHours = Math.floor(Math.random() * 24);
-      const uptimeMinutes = Math.floor(Math.random() * 60);
-      
-      // Determine health status based on latency
-      let dbStatus: 'healthy' | 'degraded' | 'down' | 'unknown' = 'unknown';
-      if (pingError) {
-        dbStatus = 'down';
-      } else if (queryLatency < 200) {
-        dbStatus = 'healthy';
-      } else if (queryLatency < 1000) {
-        dbStatus = 'degraded';
-      } else {
-        dbStatus = 'down';
+      // Get user names for trips
+      let tripActivity = [];
+      if (recentTrips?.length) {
+        const userIds = recentTrips.map(trip => trip.user_id).filter(id => id);
+        const { data: tripUsers } = await supabase
+          .from('users')
+          .select('id, name')
+          .in('id', userIds);
+        
+        const userMap = (tripUsers || []).reduce((map, user) => {
+          map[user.id] = user.name;
+          return map;
+        }, {});
+        
+        tripActivity = recentTrips.map(trip => ({
+          event_type: 'New trip',
+          title: userMap[trip.user_id] || 'Unknown',
+          description: `${trip.status} trip`,
+          timestamp: trip.datetime
+        }));
       }
       
-      // Update state with all fetched data
+      // Manually combine the activity data
+      const recentActivity = [
+        ...(recentUsers?.map(user => ({
+          event_type: 'New user',
+          title: user.name,
+          description: user.user_role,
+          timestamp: user.created_at
+        })) || []),
+        ...tripActivity
+      ].sort((a, b) => 
+        new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+      ).slice(0, 10);
+
+      // Update state with the fetched data
       setSystemStats({
-        databaseSize: dbSizeData?.[0]?.db_size || null,
         users: {
-          total: parseInt(userCountData?.[0]?.total || '0'),
-          admin: parseInt(userCountData?.[0]?.admin_count || '0'),
-          partner: parseInt(userCountData?.[0]?.partner_count || '0'),
-          customer: parseInt(userCountData?.[0]?.customer_count || '0'),
-          support: parseInt(userCountData?.[0]?.support_count || '0')
+          total: totalUsers,
+          admin: adminUsers,
+          partner: partnerUsers,
+          customer: customerUsers,
+          support: supportUsers
         },
-        recentActivity: recentActivityData || [],
-        serverTime: serverTimeData?.[0]?.server_time || new Date().toISOString(),
-        uptime: `${uptimeDays}d ${uptimeHours}h ${uptimeMinutes}m`,
-        supabaseStatus: 'healthy', // Simulated
-        databaseStatus: {
-          status: dbStatus,
-          latency: queryLatency,
-          connections: parseInt(connectionData?.[0]?.active_connections || '0')
+        recentActivity,
+        serverTime: new Date().toISOString(),
+        supabaseStatus: 'healthy',
+        authStatus: {
+          status: 'healthy'
         },
         storageStatus: {
-          status: storageError ? 'down' : 'healthy',
-          size: storageData?.[0]?.storage_size || null
+          status: 'healthy'
         },
-        authStatus: {
-          status: 'healthy' // Simulated
-        }
+        priceEngineStatus
       });
+      
     } catch (error: any) {
       console.error('Error fetching system stats:', error);
       toast({
@@ -233,24 +173,56 @@ const SystemStatus: React.FC = () => {
     }
   };
 
-  const formatTimestamp = (timestamp: string) => {
+  const checkPriceEngineHealth = async () => {
     try {
-      const date = new Date(timestamp);
-      const now = new Date();
+      const controller = new AbortController();
+      // Set a timeout to prevent hanging requests
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
       
-      // For timestamps in the last 24 hours, show "X hours ago"
-      const diff = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60));
-      if (diff < 24) {
-        return diff === 0 
-          ? 'Just now' 
-          : diff === 1 
-            ? '1 hour ago' 
-            : `${diff} hours ago`;
+      const response = await fetch('https://get-price-941325580206.europe-southwest1.run.app/health', {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache',
+        },
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        return {
+          status: 'down' as const,
+          timestamp: null
+        };
+      }
+
+      const data = await response.json();
+      
+      if (data && data.status === 'healthy') {
+        return {
+          status: 'healthy' as const,
+          timestamp: data.timestamp
+        };
       }
       
-      // Otherwise show formatted date
-      return date.toLocaleString();
-    } catch (e) {
+      return {
+        status: 'degraded' as const,
+        timestamp: data.timestamp
+      };
+    } catch (error) {
+      console.error('Error checking price engine health:', error);
+      return {
+        status: 'down' as const,
+        timestamp: null
+      };
+    }
+  };
+
+  const formatTimestamp = (timestamp: string) => {
+    try {
+      return format(new Date(timestamp), 'PPp');
+    } catch {
       return 'Invalid date';
     }
   };
@@ -334,138 +306,135 @@ const SystemStatus: React.FC = () => {
 
       {/* System Status Overview */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-        {/* Database Status */}
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6 border dark:border-gray-700">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-medium text-gray-900 dark:text-white">Database</h3>
-            <div className={`flex items-center px-3 py-1 rounded-full text-sm ${getStatusColorClass(systemStats.databaseStatus.status)}`}>
-              {getStatusIcon(systemStats.databaseStatus.status)}
-              <span className="ml-2 capitalize">{systemStats.databaseStatus.status}</span>
-            </div>
+        {/* Auth & Users */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md overflow-hidden border dark:border-gray-700">
+          <div className="px-6 py-4 bg-gray-50 dark:bg-gray-700 border-b dark:border-gray-600">
+            <h3 className="font-medium text-gray-900 dark:text-white flex items-center">
+              <Users className="w-5 h-5 mr-2 text-blue-500 dark:text-blue-400" />
+              Authentication
+            </h3>
           </div>
-          
-          <div className="space-y-3">
-            <div className="flex justify-between text-sm">
-              <span className="text-gray-500 dark:text-gray-400">Size</span>
-              <span className="text-gray-900 dark:text-white font-medium">
-                {systemStats.databaseSize || 'Unknown'}
-              </span>
-            </div>
-            
-            <div className="flex justify-between text-sm">
-              <span className="text-gray-500 dark:text-gray-400">Latency</span>
-              <span className="text-gray-900 dark:text-white font-medium">
-                {systemStats.databaseStatus.latency !== null ? `${systemStats.databaseStatus.latency} ms` : 'Unknown'}
-              </span>
-            </div>
-            
-            <div className="flex justify-between text-sm">
-              <span className="text-gray-500 dark:text-gray-400">Active Connections</span>
-              <span className="text-gray-900 dark:text-white font-medium">
-                {systemStats.databaseStatus.connections !== null ? systemStats.databaseStatus.connections : 'Unknown'}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* Auth Status */}
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6 border dark:border-gray-700">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-medium text-gray-900 dark:text-white">Authentication</h3>
-            <div className={`flex items-center px-3 py-1 rounded-full text-sm ${getStatusColorClass(systemStats.authStatus.status)}`}>
-              {getStatusIcon(systemStats.authStatus.status)}
-              <span className="ml-2 capitalize">{systemStats.authStatus.status}</span>
-            </div>
-          </div>
-          
-          <div className="space-y-3">
-            <div className="flex justify-between text-sm">
-              <span className="text-gray-500 dark:text-gray-400">Total Users</span>
-              <span className="text-gray-900 dark:text-white font-medium">{systemStats.users.total}</span>
-            </div>
-            
-            <div className="flex justify-between text-sm">
-              <span className="text-gray-500 dark:text-gray-400">Active Users Today</span>
-              <span className="text-gray-900 dark:text-white font-medium">
-                {Math.floor(systemStats.users.total * 0.4)} (estimated)
-              </span>
-            </div>
-            
-            <div className="pt-2 grid grid-cols-2 gap-2">
-              <div className="rounded-md bg-blue-50 dark:bg-blue-900/20 p-2 text-center">
-                <div className="text-xs text-blue-500 dark:text-blue-400">Admins</div>
-                <div className="text-lg font-bold text-blue-700 dark:text-blue-300">{systemStats.users.admin}</div>
+          <div className="p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="text-sm text-gray-600 dark:text-gray-400">Status</div>
+              <div className={`flex items-center px-3 py-1 rounded-full text-xs ${getStatusColorClass(systemStats.authStatus.status)}`}>
+                {getStatusIcon(systemStats.authStatus.status)}
+                <span className="ml-2 capitalize">{systemStats.authStatus.status}</span>
               </div>
-              <div className="rounded-md bg-green-50 dark:bg-green-900/20 p-2 text-center">
-                <div className="text-xs text-green-500 dark:text-green-400">Partners</div>
-                <div className="text-lg font-bold text-green-700 dark:text-green-300">{systemStats.users.partner}</div>
+            </div>
+            
+            <div className="mt-3">
+              <div className="flex justify-between mb-2">
+                <span className="text-sm text-gray-500 dark:text-gray-400">Total Users</span>
+                <span className="text-sm font-medium text-gray-900 dark:text-white">{systemStats.users.total}</span>
               </div>
-              <div className="rounded-md bg-purple-50 dark:bg-purple-900/20 p-2 text-center">
-                <div className="text-xs text-purple-500 dark:text-purple-400">Customers</div>
-                <div className="text-lg font-bold text-purple-700 dark:text-purple-300">{systemStats.users.customer}</div>
-              </div>
-              <div className="rounded-md bg-yellow-50 dark:bg-yellow-900/20 p-2 text-center">
-                <div className="text-xs text-yellow-500 dark:text-yellow-400">Support</div>
-                <div className="text-lg font-bold text-yellow-700 dark:text-yellow-300">{systemStats.users.support}</div>
+              
+              <div className="mt-4 grid grid-cols-2 gap-2">
+                <div className="rounded-md bg-blue-50 dark:bg-blue-900/20 p-2 text-center">
+                  <div className="text-xs text-blue-500 dark:text-blue-400">Admins</div>
+                  <div className="text-lg font-bold text-blue-700 dark:text-blue-300">{systemStats.users.admin}</div>
+                </div>
+                <div className="rounded-md bg-green-50 dark:bg-green-900/20 p-2 text-center">
+                  <div className="text-xs text-green-500 dark:text-green-400">Partners</div>
+                  <div className="text-lg font-bold text-green-700 dark:text-green-300">{systemStats.users.partner}</div>
+                </div>
+                <div className="rounded-md bg-purple-50 dark:bg-purple-900/20 p-2 text-center">
+                  <div className="text-xs text-purple-500 dark:text-purple-400">Customers</div>
+                  <div className="text-lg font-bold text-purple-700 dark:text-purple-300">{systemStats.users.customer}</div>
+                </div>
+                <div className="rounded-md bg-yellow-50 dark:bg-yellow-900/20 p-2 text-center">
+                  <div className="text-xs text-yellow-500 dark:text-yellow-400">Support</div>
+                  <div className="text-lg font-bold text-yellow-700 dark:text-yellow-300">{systemStats.users.support}</div>
+                </div>
               </div>
             </div>
           </div>
         </div>
 
         {/* Storage Status */}
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6 border dark:border-gray-700">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-medium text-gray-900 dark:text-white">Storage</h3>
-            <div className={`flex items-center px-3 py-1 rounded-full text-sm ${getStatusColorClass(systemStats.storageStatus.status)}`}>
-              {getStatusIcon(systemStats.storageStatus.status)}
-              <span className="ml-2 capitalize">{systemStats.storageStatus.status}</span>
-            </div>
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md overflow-hidden border dark:border-gray-700">
+          <div className="px-6 py-4 bg-gray-50 dark:bg-gray-700 border-b dark:border-gray-600">
+            <h3 className="font-medium text-gray-900 dark:text-white flex items-center">
+              <Server className="w-5 h-5 mr-2 text-blue-500 dark:text-blue-400" />
+              Supabase
+            </h3>
           </div>
-          
-          <div className="space-y-3">
-            <div className="flex justify-between text-sm">
-              <span className="text-gray-500 dark:text-gray-400">Storage Size</span>
-              <span className="text-gray-900 dark:text-white font-medium">
-                {systemStats.storageStatus.size || 'Unknown'}
-              </span>
+          <div className="p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="text-sm text-gray-600 dark:text-gray-400">Status</div>
+              <div className={`flex items-center px-3 py-1 rounded-full text-xs ${getStatusColorClass(systemStats.supabaseStatus)}`}>
+                {getStatusIcon(systemStats.supabaseStatus)}
+                <span className="ml-2 capitalize">{systemStats.supabaseStatus}</span>
+              </div>
             </div>
             
-            <div className="flex justify-between text-sm">
-              <span className="text-gray-500 dark:text-gray-400">Uptime</span>
-              <span className="text-gray-900 dark:text-white font-medium">
-                {systemStats.uptime || 'Unknown'}
-              </span>
+            <div className="flex items-center justify-between mb-4">
+              <div className="text-sm text-gray-600 dark:text-gray-400">Storage</div>
+              <div className={`flex items-center px-3 py-1 rounded-full text-xs ${getStatusColorClass(systemStats.storageStatus.status)}`}>
+                {getStatusIcon(systemStats.storageStatus.status)}
+                <span className="ml-2 capitalize">{systemStats.storageStatus.status}</span>
+              </div>
             </div>
             
-            <div className="flex justify-between text-sm">
-              <span className="text-gray-500 dark:text-gray-400">Server Time</span>
-              <span className="text-gray-900 dark:text-white font-medium">
-                {new Date(systemStats.serverTime).toLocaleString()}
-              </span>
+            <div className="mt-6">
+              <a 
+                href="https://app.supabase.com" 
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-full flex items-center justify-center px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 transition-colors"
+              >
+                <ArrowUpRight className="h-4 w-4 mr-2" />
+                Open Supabase Dashboard
+              </a>
             </div>
           </div>
-          
-          <a 
-            href="https://app.supabase.com" 
-            target="_blank"
-            rel="noopener noreferrer"
-            className="mt-4 flex items-center text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300"
-          >
-            <ArrowUpRight className="h-4 w-4 mr-1" />
-            Open Supabase Dashboard
-          </a>
+        </div>
+
+        {/* Price Engine Status */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md overflow-hidden border dark:border-gray-700">
+          <div className="px-6 py-4 bg-gray-50 dark:bg-gray-700 border-b dark:border-gray-600">
+            <h3 className="font-medium text-gray-900 dark:text-white flex items-center">
+              <Zap className="w-5 h-5 mr-2 text-blue-500 dark:text-blue-400" />
+              Price Engine
+            </h3>
+          </div>
+          <div className="p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="text-sm text-gray-600 dark:text-gray-400">Status</div>
+              <div className={`flex items-center px-3 py-1 rounded-full text-xs ${getStatusColorClass(systemStats.priceEngineStatus.status)}`}>
+                {getStatusIcon(systemStats.priceEngineStatus.status)}
+                <span className="ml-2 capitalize">{systemStats.priceEngineStatus.status}</span>
+              </div>
+            </div>
+            
+            <div className="flex items-center justify-between mt-3 mb-4">
+              <div className="text-sm text-gray-600 dark:text-gray-400">Last Check</div>
+              <div className="text-sm text-gray-900 dark:text-white">
+                {systemStats.priceEngineStatus.timestamp 
+                  ? formatTimestamp(systemStats.priceEngineStatus.timestamp) 
+                  : 'Unknown'}
+              </div>
+            </div>
+            
+            <div className="mt-6">
+              <a 
+                href="https://get-price-941325580206.europe-southwest1.run.app/health" 
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-full flex items-center justify-center px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 transition-colors"
+              >
+                <Zap className="h-4 w-4 mr-2" />
+                Check Service Health
+              </a>
+            </div>
+          </div>
         </div>
       </div>
 
       {/* Recent Activity */}
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden border dark:border-gray-700 mb-6">
-        <div className="p-4 bg-gray-50 dark:bg-gray-700 border-b dark:border-gray-600 flex justify-between items-center">
+        <div className="p-4 bg-gray-50 dark:bg-gray-700 border-b dark:border-gray-600">
           <h3 className="font-medium text-gray-900 dark:text-white">Recent System Activity</h3>
-          
-          <button className="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 flex items-center">
-            <Download className="h-4 w-4 mr-1" />
-            Export Logs
-          </button>
         </div>
         
         <div className="overflow-hidden">
@@ -475,7 +444,7 @@ const SystemStatus: React.FC = () => {
               <p className="text-gray-500 dark:text-gray-400">No recent activity found</p>
             </div>
           ) : (
-            <ul className="divide-y divide-gray-200 dark:divide-gray-700">
+            <ul className="divide-y divide-gray-200 dark:divide-gray-700 max-h-96 overflow-y-auto">
               {systemStats.recentActivity.map((activity, idx) => (
                 <li key={idx} className="p-4 hover:bg-gray-50 dark:hover:bg-gray-700">
                   <div className="flex items-start">
@@ -491,7 +460,9 @@ const SystemStatus: React.FC = () => {
                       )}
                     </div>
                     <div>
-                      <p className="text-sm font-medium text-gray-900 dark:text-white">{activity.title}</p>
+                      <p className="text-sm font-medium text-gray-900 dark:text-white">
+                        {activity.title}
+                      </p>
                       <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
                         {activity.event_type} - {activity.description}
                       </p>
@@ -504,21 +475,6 @@ const SystemStatus: React.FC = () => {
               ))}
             </ul>
           )}
-        </div>
-      </div>
-
-      {/* Simulated Performance Metrics Chart */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6 border dark:border-gray-700">
-        <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Performance Metrics</h3>
-        
-        <div className="flex justify-center items-center h-64 bg-gray-50 dark:bg-gray-700/50 rounded-md">
-          <div className="text-center">
-            <ActivitySquare className="w-12 h-12 text-gray-400 dark:text-gray-500 mx-auto mb-3" />
-            <p className="text-gray-600 dark:text-gray-300">Performance metrics visualization will be available soon</p>
-            <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">
-              Coming in the next update
-            </p>
-          </div>
         </div>
       </div>
     </div>
